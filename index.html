@@ -1,0 +1,3267 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>주사위 방어전</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;background:#11150f;overflow:hidden;
+            -webkit-tap-highlight-color:transparent;touch-action:none;user-select:none;}
+  #cv{display:block;width:100%;height:100%;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+'use strict';
+
+/* ============================================================================
+   주사위 방어전 — 단일 파일 프로토타입
+   그림은 전부 캔버스로 직접 그린다. 외부 이미지/사운드/폰트 없음.
+
+   수치 표기 규칙
+     [관찰] 실제 플레이 화면에서 확인한 값
+     [임시] 관찰값 없음. 임의로 정한 값이므로 나중에 교체할 것
+   모든 수치는 아래 CFG 한 곳에만 둔다.
+   ========================================================================== */
+
+const CFG = {
+
+  // ver3: XP 곡선을 바꿨다. 옛 세이브의 쌓인 경험치가 새 기준을 이미 넘어
+  //       첫 처치에 바로 레벨업이 터지는 문제가 있어 런을 폐기한다
+  save: { key:'dice-clone.save', ver:3 },
+
+  /* 밸런스 확인용 스위치.
+     freshOnLoad: true 면 새로고침할 때마다 저장된 런을 무시하고 판 1부터 시작한다.
+                  재화는 그대로 쌓인다. 정상 플레이로 돌리려면 false. */
+  dev: { freshOnLoad:true },
+
+  view: { w:360, arMin:1.40, arMax:2.30 },      // [임시] 논리 해상도. 가로 360 고정, 세로는 화면 비율
+
+  /* ---- 무기 ------------------------------------------------------------
+     피해와 레벨당 증가폭은 영웅 상세 화면 관찰값.
+     cost 는 관찰만 해둔 값이며 이번 단계에서 사용하지 않는다(무기 레벨업 미구현). */
+  weapons: {
+    // cur = 레벨업에 쓰는 재화, cost = Lv1→2 비용, costStep = 레벨당 증가분
+    // [관찰] 빠름 피해5 Lv1 → 7 Lv2, 레벨당 +2, 비용 결정 20 → 25 (그래서 step 5)
+    // [관찰] 강함 피해8 Lv1, 레벨당 +4, 비용 결정 35. step 은 [임시]
+    // ── 2026-08-18 (David 지시): 재화 역할을 둘로 못 박는다 ──
+    //   단검  = 캐릭터 공격력(무기 레벨). 마법사·궁수 가리지 않고 전부 이걸 쓴다.
+    //   다이아 = 주사위 등급(아래 diceTiers). 오직 그것만.
+    //   전에는 마법사가 다이아, 궁수가 단검이라 영웅마다 모으는 재화가 달랐다.
+    fast:   { name:'빠름', dmg:5, dmgPerLv:2, col:'#7fe0ff', col2:'#1b86d8', cur:'dagger', cost:20, costStep:5  },
+    strong: { name:'강함', dmg:8, dmgPerLv:4, col:'#ffb03a', col2:'#e8452a', cur:'dagger', cost:35, costStep:10 },
+    // 궁수 무기 — 원본 관찰값이 없다. 전부 [임시].
+    // 유도는 마법사의 특성이므로 궁수 화살은 직선으로 날아간다(missile.homing=false).
+    // 대신 이동 예측 조준을 하고 아주 빠르게 날아간다.
+    // 궁수 강화는 단검으로 한다 [관찰] — 영웅 목록에서 ARCHER 옆이 단검 아이콘이었다
+    swift: { name:'속사', dmg:4, dmgPerLv:2, col:'#c6f06a', col2:'#4e7d1c', cur:'dagger', cost:15, costStep:5 }, // [임시]
+    ice:   { name:'얼음', dmg:6, dmgPerLv:2, col:'#bdefff', col2:'#2b8fc9', cur:'dagger', cost:25, costStep:8 }, // [임시]
+  },
+
+  /* 전투력 = 6면 총피해 × 계수.
+     [관찰] 총피해 54 → 453, 66 → 554. 453/54=8.389, 554/66=8.394 → 계수 8.39 */
+  power: { coef:8.39 },
+
+  /* 영웅 목록의 '잠금 해제 예정' 칸 [관찰] — 사진에 있던 조건들 */
+  lockedHeroes: [
+    '전투 8에서 해제', '전투 15에서 해제', '상점에서',
+    '전투 43에서 해제', '상점에서', '전투 29에서 해제',
+    '도전 과제로 해제', '상점에서', '상점에서',
+  ],
+
+  /* 얼음 화살에 맞은 적은 잠깐 느려진다 [임시] */
+  ice: { slowMul:0.45, slowT:1.6 },
+
+  /* 조준 — 화면 위(사거리 밖)에 있는 적은 쏘지 않고 기다린다 */
+  aim: { minY:4 },
+
+  /* ---- 주사위 공통 ------------------------------------------------------
+     면에 적힌 숫자 c 는 발사 수이지 피해량이 아니다. */
+  dice: {
+    minInterval: 0.35,        // [임시] 속도 증가 누적 하한
+    spin:        1.20,        // 주사위가 튀어올라 굴러 착지할 때까지. 착지하는 순간 발사한다
+    spinMaxFrac: 0.70,        // 다만 굴림 주기의 이 비율을 넘지 않는다 —
+                              // 속도 카드로 주기가 짧아졌을 때 연출이 다음 굴림을 잡아먹지 않게
+    shotGap:     0.08,        // [임시] 한 면 안에서의 연사 간격
+    startTwos:   2,           // 시작 6면 중 무작위 이 개수만큼 '기본값+1'로 시작한다(나머지는 기본값)
+  },
+
+  /* ---- 주사위 등급 -------------------------------------------------------
+     2026-08-18 (David 지시): 주사위를 영구 강화한다.
+       "실버 골드 플래티넘 에메랄드 다이아몬드 … 위로 올라갈수록 시작부터 눈금이 더 높게"
+     base = 그 등급으로 판을 시작할 때 여섯 면에 적히는 발사 수.
+       지금까지는 어느 등급이든 1이었다(=실버). 등급이 오르면 시작 눈금 자체가 올라간다.
+     강화는 영웅 상세(캐릭터 강화창)에서 '다이아'로만 한다. 영웅마다 따로 올린다 —
+       주사위는 영웅의 것이고, 무기 레벨도 이미 영웅별이라 결이 같다.
+     cost 는 그 등급으로 '올라가는' 값이다(실버는 시작 등급이라 0).
+     ⚠ 등급을 더 넣을 때는 이 배열에만 줄을 더한다. 아래 코드는 길이를 세지 않는다. */
+  diceTiers: [
+    { key:'silver',   name:'실버',       base:1, cost:0,   col:'#c8d2dc', col2:'#8b97a3' },
+    { key:'gold',     name:'골드',       base:2, cost:40,  col:'#ffd75e', col2:'#c9962a' },
+    { key:'platinum', name:'플래티넘',   base:3, cost:110, col:'#dfe9f2', col2:'#93a6b8' },
+    { key:'emerald',  name:'에메랄드',   base:4, cost:260, col:'#63e6a4', col2:'#1f8f5f' },
+    { key:'diamond',  name:'다이아몬드', base:5, cost:600, col:'#8fe9ff', col2:'#2b9fd4' },
+  ],
+
+  /* ---- 주사위 정육면체 --------------------------------------------------
+     둥근 모서리 정육면체가 슬롯에서 튀어올라 굴러 착지한다.
+     아래 값은 David가 준 참고 화면 3장에서 실측했다(가로 360 논리 기준).
+       쉴 때 한 변 약 57 → 슬롯 크기와 비슷
+       공중에서 약 116 → 약 2배로 커진다
+       올라가는 높이 약 76 → 최고점에서 성벽 높이에 닿는다 */
+  cube: {
+    side:52, jump:76, grow:1.0,   // [관찰-실측] grow 1.0 = 최고점에서 2배
+    round:0.22,                   // [임시] 모서리 둥글기(한 변 대비)
+    // 착지 자세의 기울기. 0 이면 나온 면이 정면으로 딱 보인다(원본이 그렇다).
+    // 0 이 아니면 옆면까지 같이 보여 삐딱하게 착지한 것처럼 된다.
+    // 구르는 동안에는 어차피 회전하므로 입체로 보인다
+    tiltX:0, tiltY:0,
+    turnMin:1, turnMax:2,         // [임시] 굴러가며 도는 바퀴 수
+    kickPx:5,                     // [임시] 한 발 쏠 때 눌리는 픽셀
+  },
+
+  /* ---- 영웅 ------------------------------------------------------------
+     영웅마다 자기 주사위 6면과 자기 경험치/레벨을 따로 갖는다.
+     마법사 면 구성은 관찰값(빠름 3면 각 2발, 강함 3면 각 1발).
+     궁수는 원본 관찰값이 없다 — 배치 카드도 전용 주사위도 David 요청으로 만든 것이라 전부 [임시]. */
+  heroes: {
+    mage: {
+      name:'마법사',
+      // David 요청으로 시작은 전부 1발. 관찰된 원본 상태는 빠름 3면 각 2발 / 강함 3면 각 1발이며
+      // 그건 무기를 키운 뒤의 모습이다. 되돌리려면 fast 세 면을 c:2 로.
+      baseFaces:[ { w:'fast',   c:1 }, { w:'fast',   c:1 }, { w:'fast',   c:1 },
+                  { w:'strong', c:1 }, { w:'strong', c:1 }, { w:'strong', c:1 } ],
+      interval:2.60,          // [임시] 굴림 주기(초). 느리게 시작해야 '속도 증가' 카드가 의미를 갖는다
+      tile:'#4db8f0', tile2:'#1a7fd4',   // [관찰] 원본 주사위는 파랑
+      card:'#2f7ff0', cardTop:'#5aa8ff', // 레벨업 카드 색 — 어느 영웅의 레벨업인지 색으로 구분
+      xp:'#7fd4ff',                      // 이 영웅의 경험치 막대 색
+    },
+    archer: {
+      name:'궁수',
+      // 마법사와 같은 이유로 궁수도 전부 1발로 시작한다.
+      // (배치되자마자 마법사보다 강하면 '약하게 시작해 키운다'는 흐름이 깨진다)
+      baseFaces:[ { w:'swift', c:1 }, { w:'swift', c:1 }, { w:'swift', c:1 },
+                  { w:'ice',   c:1 }, { w:'ice',   c:1 }, { w:'ice',   c:1 } ], // [임시]
+      interval:2.20,          // [임시] 마법사보다 자주 굴리고 발당 피해는 낮다
+      tile:'#57b86a', tile2:'#237a45',   // [임시] 마법사 주사위와 구분하려고 초록으로
+      card:'#2f9e4f', cardTop:'#5fc97c', // [임시] 궁수 레벨업 카드는 초록
+      xp:'#9ff06a',
+    },
+  },
+  heroOrder:['mage','archer'],
+
+  /* ---- 스킬 카드 (주문서 탭) ---------------------------------------------
+     주문서 탭에 4x4 = 16칸이 있고, 판을 하나 끝낼 때마다 카드팩 3택으로 한 장씩 모은다.
+     칸 수는 16 고정, 내용은 차차 채운다.
+       soon:true  아직 만들지 않은 칸. 탭에서는 물음표로 보이고 카드팩에도 나오지 않는다
+       hero       그 영웅의 스킬(카드 색이 영웅 색을 따라간다). null 이면 공용
+       kind       'skill' 전투 효과 / 'perk' 캐릭터 특혜 — perk 는 아직 하나도 없다
+     effect 는 '무엇이 얼마나 세지는가' 한 줄이다. 지금 쓰는 형식은 하나뿐:
+       { w:무기키, stat:'splashR', mulPerLv:0.30 } → 그 무기의 그 값이 레벨당 +30%
+     ⚠ 새 형식이 필요하면 skillMul() 한 곳만 늘린다. 효과 계산을 코드 여기저기에 흩지 말 것 —
+       흩으면 '카드는 얻었는데 아무 일도 안 일어난다'가 어디서 나는지 못 찾는다. */
+  skills: {
+    cols:4, rows:4,               // 4x4 = 16칸
+    maxLv:5,                      // [임시] 같은 카드를 또 뽑으면 레벨이 오른다. 그 상한
+    packPick:3,                   // [임시] 카드팩이 펼치는 장수. 그중 한 장을 고른다
+    packFlip:0.42,                // [임시] 고른 카드가 뒤집히는 시간(초)
+    list: [
+      /* 1 — David 지정 샘플.
+         마법사의 두 번째 무기(강함 = 파이어볼)가 터질 때 폭발 범위가 넓어진다 */
+      { id:'fireBlast', kind:'skill', hero:'mage', name:'폭발 확장',
+        desc:'파이어볼이 터질 때 폭발이 더 넓게 퍼집니다',
+        effect:{ w:'strong', stat:'splashR', mulPerLv:0.30 } },   // [임시] 레벨당 +30%
+
+      /* 2~16 — 아직 빈 칸이다. 스킬이 정해지면 soon 을 지우고 위와 같은 형식으로 채운다 */
+      { id:'slot02', soon:true }, { id:'slot03', soon:true }, { id:'slot04', soon:true },
+      { id:'slot05', soon:true }, { id:'slot06', soon:true }, { id:'slot07', soon:true },
+      { id:'slot08', soon:true }, { id:'slot09', soon:true }, { id:'slot10', soon:true },
+      { id:'slot11', soon:true }, { id:'slot12', soon:true }, { id:'slot13', soon:true },
+      { id:'slot14', soon:true }, { id:'slot15', soon:true }, { id:'slot16', soon:true },
+    ],
+    /* 만들어 둔 스킬이 아직 하나뿐이라 3택이 성립하지 않는다.
+       빈 자리는 재화 카드로 채운다 — 스킬을 채워 넣는 만큼 저절로 밀려나 사라진다.
+       amount = base + perStage x 판번호 */
+    filler: { base:6, perStage:2 },
+  },
+
+  /* ---- 유도탄 ---------------------------------------------------------- */
+  missile: {
+    // homing:true = 유도탄. 마법사만 유도한다(그게 마법사의 특성).
+    // 궁수 화살은 직선으로 날아가며 지나가는 길에 닿은 적을 맞힌다.
+    // 물결만 유도한다. 화염은 직선으로 날아가 착탄 지점 주변에 작은 폭발을 낸다.
+    // splashR 은 나중에 '폭발 범위 확장' 카드로 키울 값이라 여기 한 줄로 뺐다
+    // 물결 유도탄은 지나쳐도 되돌아와 끝까지 쫓는다(화면 밖으로 나가 사라지지 않는다)
+    fast:   { speed:330, turn:11.0, r:5, life:9.0, tail:74, tailW:9, spark:true, shape:'diamond', homing:true }, // [임시]
+    strong: { speed:330, turn:0,   r:9, life:2.8, tail:26, tailW:19, spark:false, shape:'flame',   homing:false,
+              splashR:34, splashMul:0.5 },
+              // [임시] 반경 34 = 붙어 있는 적(중심 간 28)까지만 닿는 작은 폭발.
+              // 적 반지름이 14 이므로 이보다 작으면 아무도 안 맞는다. 확장 카드로 키울 값
+    swift:  { speed:760, turn:0,   r:4, life:2.0, tail:40, tailW:5,  spark:false, shape:'arrow',   homing:false }, // [임시] 아주 빠르다
+    ice:    { speed:600, turn:0,   r:6, life:2.2, tail:30, tailW:9,  spark:true,  shape:'ice',     homing:false }, // [임시] 맞으면 슬로우
+    spread: 0.30,             // [임시] 유도탄 발사 각 흔들림(라디안)
+    spreadStraight: 0.05,     // [임시] 직선탄은 거의 흔들지 않는다(빗맞으면 그냥 빗나가므로)
+    orphanLife: 0.5,          // [임시] 쫓을 적이 없어진 유도탄이 사라지기까지(초)
+  },
+
+  /* ---- 성벽 ------------------------------------------------------------ */
+  wall: { hp:500 },           // [관찰] 시작 500. 판이 바뀌어도 회복 없음
+
+  /* ---- 웨이브 ----------------------------------------------------------
+     관찰된 웨이브 수: 1/8, 10/10, 1/12, 6/14, 7/14 — 원본은 8 에서 시작해 14 까지 늘어난다.
+     David 지정으로 시작을 4 로 낮추고 판마다 +1 로 바꿨다(초반 판을 짧게).
+     판1 4 · 판2 5 · 판3 6 · 판5 8(+보스2=10) · 판11 이후 14 고정. */
+  wave: {
+    normal: 4,                // David 지정: 판1 은 4웨이브로 짧게 시작
+    grow: 1, growEvery: 1, max: 14,   // David 지정: 판이 1 오를 때마다 웨이브 +1.
+                                      // max 14 는 [관찰] 상한 — 관찰된 최대가 14 였다(판 11 부터 고정)
+    bossAdd: 2,               // [임시] 보스판은 두 웨이브 더
+    limit: 15.0,              // [임시] 웨이브 제한 시간(초). 짧으면 적이 계속 누적돼 성벽이 갈린다
+    gap:    0.9,              // [임시] 웨이브 사이 간격
+    spawnGap: 0.35,           // [임시] 같은 웨이브 안 스폰 간격
+  },
+
+  /* ---- 판 / 월드 ------------------------------------------------------- */
+  stage: { bossAt:[5,10,15,20,25,30], perWorld:30 },   // [관찰] 보스 판과 월드 크기
+
+  /* ---- 적 -------------------------------------------------------------- */
+  enemy: {
+    /* 판별 증가율을 아주 완만하게 잡은 이유:
+       판이 바뀌면 주사위가 리셋되는데(resetHeroes) 적만 세지면 판 2~3에서 무조건 막힌다.
+       원본은 무기 레벨업·주문서·성탑(전부 영구)으로 그걸 상쇄하지만 아직 미구현이다.
+       그 셋을 만들면 여기 증가율을 다시 올려야 한다. 증가율은 전부 지어낸 [임시]값이다. */
+    hp:13,   hpGrow:1.10,     // [임시] 중간 놈 체력. 판당 +10%(판1 13 · 판5 19 · 판10 31 · 판20 80)
+                              // 무기 레벨업으로 따라잡는 구조다. 너무 빡세면 이 값을 낮춘다
+    /* 적이 느려서 웨이브가 겹친다 — 전장에 무리가 쌓이면서 서서히 밀려 들어오는 모양이 된다.
+       전장을 약 20초에 횡단하고 웨이브 제한은 15초이므로 앞 웨이브가 살아 있는 채로 다음이 온다 */
+    speed:24, speedGrow:1.01, // [임시] 초당 논리 픽셀
+    // 성벽 피해와 타격 간격은 종류별로 etypes 에 있다
+    r:14,                     // [임시] 반지름. 화면에서 잘 보이게 키웠다
+    // 판이 올라갈수록 확실히 늘어나야 한다(판1 7 · 판3 10 · 판5 13 · 판10 20)
+    perWave:7, perWaveAdd:1.4, perWaveMax:26,   // [임시] 그 판의 마지막 웨이브 마릿수
+    // 판 안에서 웨이브가 커진다. 첫 웨이브는 위 값의 rampStart 배(=소수)로 시작해
+    // 마지막 웨이브에서 100%가 된다. 주사위도 판 안에서 자라므로 둘이 경쟁하는 모양이 된다
+    rampStart:0.40,           // [임시]
+    xp:1,                     // [임시] 처치 XP
+  },
+
+  /* ---- 적 종류 ----------------------------------------------------------
+     참고 화면에서 세 종류가 섞여 있었다.
+       작은 놈  눈만 있고 작다. 꽤 많다
+       중간 놈  입 벌리고 빨간 혀. 가장 흔하다
+       큰 놈    크고 둥글고 혀가 없다. 화면에 두 마리뿐이고 느리다
+     화면에서 센 비율은 대략 작은 33% / 중간 58% / 큰 8% 였다 → weight 로 반영.
+     hpMul/rMul/spMul 은 기본(grunt) 대비 배수이며 관찰값이 없어 [임시].
+     xpMul 은 크기 순서대로 1·2·3 — 큰 놈일수록 경험치를 더 준다(David 지정).
+     wallDmg = 성벽 1회 타격 피해, hitGap = 타격 간격(초).
+     클수록 한 방이 세지만 그만큼 느리게 때린다 [관찰 아님 — David 지정값] */
+  etypes: {
+    small: { name:'작은',  hpMul:0.5, rMul:0.60, spMul:1.15, xpMul:1, weight:33, wallDmg:2, hitGap:1.0 },
+    grunt: { name:'중간',  hpMul:1.0, rMul:1.00, spMul:1.00, xpMul:2, weight:59, wallDmg:3, hitGap:1.4 },
+    big:   { name:'큰',    hpMul:4.5, rMul:1.70, spMul:0.55, xpMul:3, weight:8,  wallDmg:4, hitGap:2.0 },
+  },
+  // 큰 놈은 판이 올라갈수록 조금씩 늘어난다(판1 8% → 판마다 +1.2%p, 최대 20%).
+  // fromWave: 각 판의 이 웨이브부터만 나온다 — 주사위가 아직 약한 초반 웨이브에서 빠진다
+  bigRate: { base:0.08, perStage:0.012, max:0.20, fromWave:4 },
+
+  /* 판 안에서 적 구성이 점점 세진다.
+     첫 웨이브는 작은 놈 위주(smallStart)로 나오고 마지막 웨이브로 갈수록
+     중간 놈 비중이 커진다(smallEnd). 큰 놈은 위 fromWave 부터 섞인다 [임시] */
+  mix: { smallStart:0.90, smallEnd:0.22 },
+
+  /* ---- 미믹 ------------------------------------------------------------
+     보물상자처럼 생긴 놈. 판당 한 마리만, 무작위 웨이브에 섞여 나온다.
+     잡으면 3택 없이 무작위 주사위 업그레이드 1개를 그 탄을 쏜 영웅이 즉시 얻는다.
+     체력·속도 배수는 관찰값이 없어 [임시]. */
+  // xpMul 0 — 미믹은 경험치를 주지 않는다. 보상은 무작위 업그레이드 카드로만 준다
+  mimic: { hpMul:6, rMul:2.2, spMul:0.7, xpMul:0, wallDmg:3, hitGap:1.6 },
+
+  /* ---- 보스 ------------------------------------------------------------ */
+  boss: {
+    // xpMul 0 — 보스를 잡으면 판이 끝나므로 경험치를 줘도 쓸 곳이 없다
+    hpMul:9, speedMul:0.45, rMul:2.6, xpMul:0,                // [임시]
+    wallDmg:8, hitGap:2.2,                                    // [임시] 한 방이 세지만 느리다
+    bigAt:[10,30], bigMul:1.6,                                // [임시] 판10 큰 보스, 판30 최종보스 배수
+    warnFlash:5, warnGap:0.42,                                // [임시] 경고 깜빡임 횟수/간격
+  },
+
+  /* ---- XP -------------------------------------------------------------- */
+  /* 요구 XP = base × mul × grow^(레벨-1)
+     base 15 는 [관찰]값(0/15, 4/15)이므로 지우지 않고 남겨둔다.
+     mul·grow 는 [임시] — David 요청으로 하향해서 주사위 선택이 더 자주 뜨게 했다.
+     David 요청으로 레벨마다 요구량이 step 씩 일정하게 늘어난다(등차).
+     요구 XP = start + step × (레벨-1) → Lv1 3 · Lv2 6 · Lv3 9 · Lv5 15 · Lv10 30 · Lv20 60
+
+     참고로 원본은 등비였다 — base 15 에 배율 약 1.25.
+     (관찰된 0/15, 4/15, 44/90, 48/70, 50/80 이 그 곡선과 맞는다)
+     원본 방식으로 되돌리려면 xpNeed 를 base·grow 식으로 바꾸면 된다. */
+  xp: { start:3, step:3 },
+
+  /* ---- 업그레이드 3택 ---------------------------------------------------
+     카드 4종과 효과값, 전부 별 1개 — 모두 관찰값.
+     대상 면은 무기 종류를 가리지 않는다(두 면 카드에서 화염+물결이 함께 나왔다). */
+  up: {
+    pick: 3,                  // [관찰] 3택
+    pool: [
+      { id:'grow1', name:'성장',      foot:'한 면', faces:1, add:3 },  // [관찰]
+      { id:'grow2', name:'성장',      foot:'두 면', faces:2, add:2 },  // [관찰]
+      { id:'grow3', name:'성장',      foot:'세 면', faces:3, add:1 },  // [관찰]
+      { id:'speed', name:'속도 증가', foot:'재사용 대기시간 -20%', cd:0.80 }, // [관찰]
+      // 원본에 없는 카드. 아직 안 나온 나머지 영웅을 합류시킨다(둘 다 있으면 후보에서 빠진다)
+      { id:'ally', ally:true, foot:'전용 주사위와 경험치' },                  // [임시]
+    ],
+  },
+
+  /* ---- 승리 보상 --------------------------------------------------------
+     칸 순서는 관찰값(단검 결정 골드 자수정 물약).
+     수량은 판 번호 미상인 화면 1장에서 11/9/8/2/5 를 관찰했다.
+     그 값을 base 로 쓰고 판별 증가분은 임시로 둔다. */
+  reward: {
+    order: ['dagger','crystal','gold','amethyst','potion'],                 // [관찰]
+    label: { dagger:'단검', crystal:'결정', gold:'골드', amethyst:'자수정', potion:'물약' },
+    base:  { dagger:11, crystal:9, gold:8, amethyst:2, potion:5 },          // [관찰] 판 번호 미상
+    perStage: { dagger:0.5, crystal:0.4, gold:0.4, amethyst:0.1, potion:0.2 }, // [임시]
+    bossMul: 2.0,             // [임시]
+    lootCount: 26,            // [임시] 흩뿌리는 전리품 개수
+    chestFill: 1.3,           // [임시] 상자 진행바 채우는 시간(초)
+  },
+
+  /* ---- 손맛 ------------------------------------------------------------
+     한 발마다 짧게 진동 + 발사 섬광 + 주사위 반동.
+     ⚠ navigator.vibrate 는 안드로이드 크롬만 지원한다. iOS 사파리는 미지원이라
+       아이폰에서는 진동이 안 오고 시각 반동만 남는다. */
+  haptic: { shot:9, minGap:0.045 },   // [임시] 발당 진동 ms, 연사 시 최소 간격(초)
+
+  /* ---- 지역 ------------------------------------------------------------
+     원본의 지역 이름은 쓰지 않는다(저작권). 우리 이름으로 붙였다. */
+  region: { name:'1. 초록 언덕' },
+
+  /* ---- 색 -------------------------------------------------------------- */
+  col: {
+    homeBg:'#1e3a52', homeBg2:'#22405a', homeBar:'#8f9a92',   // [관찰] 홈 남색 타일 + 회색 띠
+    field:'#6f7f62', field2:'#657658',        // [관찰] 올리브 초원
+    ground:'#dfe3dd', wall:'#eef1ec', wall2:'#c9cec4',
+    hudLabel:'#3f4038', xpTrack:'#4a3626', xpFill:'#ffc93c', xpFrame:'#f2efe4',
+    tile:'#4db8f0', tile2:'#1a7fd4',
+    card:'#2f7ff0', cardTop:'#5aa8ff',
+    enemy:'#7fa855', enemy2:'#4e7033', enemyLine:'#1e2a18',
+    hpTrack:'#14140f', hpFill:'#ef3b3b',
+    dagger:'#e9eef2', crystal:'#35c8f5', gold:'#ffc628', amethyst:'#b563f0', potion:'#a24ee0',
+  },
+};
+
+
+/* ============================================================================
+   유틸
+   ========================================================================== */
+const TAU = Math.PI * 2;
+const clamp = (v,a,b) => v < a ? a : (v > b ? b : v);
+const rnd  = (a,b) => a + Math.random() * (b - a);
+const rndi = (a,b) => Math.floor(a + Math.random() * (b - a + 1));
+function pickOne(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
+function shuffle(a){
+  for (let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+function angLerp(a,b,t){
+  let d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI;
+  return a + d * t;
+}
+
+
+/* ============================================================================
+   캔버스 / 레이아웃
+   ========================================================================== */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const S = { s:1, ox:0, oy:0, dpr:1 };
+const L = {};
+let VW = CFG.view.w, VH = 720;
+
+function resize(){
+  const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
+  S.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  VW = CFG.view.w;
+  VH = Math.round(VW * clamp(h / w, CFG.view.arMin, CFG.view.arMax));
+  cv.width  = Math.round(w * S.dpr);
+  cv.height = Math.round(h * S.dpr);
+  S.s  = Math.min(cv.width / VW, cv.height / VH);
+  S.ox = (cv.width  - VW * S.s) / 2;
+  S.oy = (cv.height - VH * S.s) / 2;
+  layout();
+}
+
+function layout(){
+  L.w = VW; L.h = VH;
+  // 경험치 막대는 상단이 아니라 각 영웅 슬롯 아래에 둔다(영웅이 늘어나도 자리가 늘지 않는다)
+  L.waveY = 30;
+  L.hud = L.waveY + 30;
+  L.wallY = Math.round(VH * 0.735);                     // [관찰] 성벽 위치 비율
+  L.wallY = Math.max(L.hud + 150, L.wallY);
+  L.groundH = VH - L.wallY;
+  // 하단 슬롯 3칸 — 가운데가 마법사, 오른쪽이 궁수, 왼쪽은 나중에 추가할 영웅 자리 [관찰]
+  L.cardW = 56; L.cardH = 54;
+  L.slotX = [0.20, 0.50, 0.80].map(f => Math.round(L.w * f - L.cardW / 2));
+  L.cardX = { mage:L.slotX[1], archer:L.slotX[2] };
+  // 슬롯 아래로 굴림 막대 → 경험치 막대 → Lv 글자 순서. 전체가 바닥에 닿지 않게 위로 올린다
+  L.barH = 8; L.lvH = 12;
+  const stackH = L.cardH + 6 + L.barH + 3 + L.barH + L.lvH;
+  L.cardY = Math.min(Math.round(L.wallY + L.groundH * 0.21), VH - 6 - stackH);
+  L.pillY = L.cardY + L.cardH + 6;
+  L.xpBarY = L.pillY + L.barH + 3;
+  L.lvY = L.xpBarY + L.barH + 7;
+}
+
+
+/* ============================================================================
+   상태
+   ========================================================================== */
+const G = {
+  screen:'main',        // main | battle | levelup | reward | gameover | spell | heroes
+  t:0,
+  meta:null,
+  run:null,
+  b:null,               // 전투 런타임(세이브하지 않음)
+  enemies:[], bullets:[], parts:[], loot:[], rings:[],
+  arriveSeq:0,          // 성벽 도착 순번 발급기
+  saveDirty:false, saveT:1,
+  wiped:false,          // 옛 구조 세이브를 버렸는지
+  lastStage:1,
+  worldClear:false,
+  spellSel:null,        // 주문서 탭에서 눌러 둔 카드 id(설명칸에 쓴다)
+};
+
+function newMeta(){
+  const wlv = {};
+  for (const k in CFG.weapons) wlv[k] = 1;   // 무기 레벨은 영구. 레벨업 UI는 다음 단계이므로 항상 1
+  // 2026-08-18: 주사위 등급은 영웅마다 따로 오른다. 0 = 실버(시작 등급).
+  const dice = {};
+  for (const h of CFG.heroOrder) dice[h] = 0;
+  return {
+    cur:{ dagger:0, crystal:0, gold:0, amethyst:0, potion:0 },
+    wlv:wlv,
+    dice:dice,
+    // 2026-08-18: 모은 스킬 카드. { 스킬id : 레벨 } 이고 없는 키 = 아직 못 얻은 카드.
+    // 영구다 — 판이 끝나거나 게임오버가 나도 사라지지 않는다
+    skills:{},
+    bestStage:0,
+    vibrate:true,
+  };
+}
+
+/* ---- 주사위 등급 헬퍼 ----------------------------------------------------
+   등급을 읽는 곳이 여러 군데다(판 시작·영웅 상세·전투력). 한 곳에서만 계산한다 —
+   갈리면 '상세엔 3인데 판을 열면 1'이 난다. */
+function diceTierIdx(hid){
+  const n = CFG.diceTiers.length - 1;
+  const v = (G.meta && G.meta.dice) ? G.meta.dice[hid] : 0;
+  return clamp(Math.floor(v || 0), 0, n);
+}
+function diceTier(hid){ return CFG.diceTiers[diceTierIdx(hid)]; }
+/* 그 영웅이 '판을 시작할 때' 갖는 여섯 면. 등급의 base 를 깔고 시작한다.
+   화면(영웅 상세·전투력)과 실제 판이 반드시 같은 값을 보게 이 함수만 쓴다. */
+function heroStartFaces(hid){
+  const b = diceTier(hid).base;
+  return CFG.heroes[hid].baseFaces.map(f => ({ w:f.w, c:b }));
+}
+
+/* 발사 한 발당 짧은 진동.
+   ⚠ navigator.vibrate 는 안드로이드 크롬만 지원한다 — iOS 사파리에는 없어서 조용히 넘어간다 */
+let lastVib = -1;
+function buzz(){
+  if (!G.meta || !G.meta.vibrate) return;
+  if (typeof navigator === 'undefined' || !navigator.vibrate) return;
+  if (G.t - lastVib < CFG.haptic.minGap) return;
+  lastVib = G.t;
+  try { navigator.vibrate(CFG.haptic.shot); } catch (e) { /* 무시 */ }
+}
+/* 영웅 하나 = 자기 주사위 6면 + 자기 굴림 주기 + 자기 경험치/레벨 */
+function newHero(hid){
+  // 2026-08-18: 시작 눈금은 주사위 등급이 정한다(실버 1 · 골드 2 · … · 다이아몬드 5).
+  const faces = heroStartFaces(hid);
+  // 그 위에 무작위로 두 면만 한 눈금 더 얹는다 — 같은 영웅이라도 판마다 출발이 조금씩 다르다.
+  //   (등급이 올라도 이 '들쭉날쭉함'은 그대로 남는다)
+  const idx = [];
+  for (let i = 0; i < faces.length; i++) idx.push(i);
+  for (const i of shuffle(idx).slice(0, CFG.dice.startTwos)) faces[i].c += 1;
+  return { faces:faces, cdMul:1, level:1, xp:0 };
+}
+/* 판 하나가 끝나면 전부 처음 상태로 돌아간다 — 면값·굴림 주기·경험치·레벨,
+   그리고 어떤 영웅이 나와 있었는지까지.
+   근거: 참고 화면에서 웨이브 1/8 과 웨이브 1/12 이 둘 다 XP 0/15 였다.
+   매 전투 시작 때 영웅 선택 화면에서 한 명을 고르고,
+   나머지 한 명은 전투 중 3택의 '배치' 카드로 합류한다. */
+function resetHeroes(run){
+  run.heroes = { mage:null, archer:null };
+}
+
+function newRun(){
+  const run = {
+    started:false,
+    stage:1, wave:1,
+    wallHp:CFG.wall.hp,
+    heroes:null,
+  };
+  resetHeroes(run);
+  return run;
+}
+
+const isBoss    = st => CFG.stage.bossAt.indexOf(st) >= 0;
+function waveTotal(st){
+  const W = CFG.wave;
+  const n = W.normal + W.grow * Math.floor((st - 1) / W.growEvery)
+            + (isBoss(st) ? W.bossAdd : 0);
+  return Math.min(W.max, n);   // 상한은 보스 가산까지 더한 뒤에 적용한다
+}
+/* 일반 적이 나오는 웨이브 수. 보스판은 마지막 한 웨이브가 보스 차지다 */
+function normalWaves(st){ return waveTotal(st) - (isBoss(st) ? 1 : 0); }
+/* 지금이 보스 웨이브인가 */
+function onBossWave(){ return isBoss(G.run.stage) && G.run.wave >= waveTotal(G.run.stage); }
+const xpNeed    = lv => CFG.xp.start + CFG.xp.step * (lv - 1);
+function wdmg(w){
+  const W = CFG.weapons[w];
+  const lv = (G.meta && G.meta.wlv[w]) || 1;
+  return W.dmg + W.dmgPerLv * (lv - 1);
+}
+
+/* ---- 스킬 카드 ------------------------------------------------------------
+   모은 카드의 효과 계산은 전부 이 네 함수를 지난다.
+   전투 코드는 splashR(w) 처럼 '지금 값이 얼마냐'만 물어본다 — 그래야 카드가 늘어도
+   전투 코드를 안 건드린다. */
+function skillDef(id){
+  for (const sk of CFG.skills.list) if (sk.id === id) return sk;
+  return null;
+}
+/* 그 카드를 몇 레벨까지 모았나. 0 = 아직 못 얻었다 */
+function skillLv(id){ return (G.meta && G.meta.skills && G.meta.skills[id]) || 0; }
+
+/* 모아둔 카드가 그 무기의 그 값을 몇 배로 만드는가. 아무것도 없으면 1 배 그대로.
+   같은 값을 키우는 카드가 여러 장이면 배수가 더해진다(1 + 0.3 + 0.2 …) */
+function skillMul(w, stat){
+  let mul = 1;
+  for (const sk of CFG.skills.list){
+    if (sk.soon || !sk.effect) continue;
+    if (sk.effect.w !== w || sk.effect.stat !== stat) continue;
+    mul += sk.effect.mulPerLv * skillLv(sk.id);
+  }
+  return mul;
+}
+/* 폭발 반경 — 스킬로 넓어진 실제 값. 폭발이 없는 무기는 0 */
+function splashR(w){
+  const M = CFG.missile[w];
+  if (!M || !M.splashR) return 0;
+  return M.splashR * skillMul(w, 'splashR');
+}
+/* 카드 한 장 획득. 이미 있으면 레벨이 오른다. 상한이면 아무 일도 없다 */
+function gainSkill(id){
+  const lv = skillLv(id);
+  if (lv >= CFG.skills.maxLv) return false;
+  G.meta.skills[id] = lv + 1;
+  save();
+  return true;
+}
+/* 카드팩에 나올 수 있는 스킬 — 만들어 뒀고(soon 아님) 아직 상한이 아닌 것 */
+function packableSkills(){
+  const out = [];
+  for (const sk of CFG.skills.list){
+    if (sk.soon) continue;
+    if (skillLv(sk.id) >= CFG.skills.maxLv) continue;
+    out.push(sk);
+  }
+  return out;
+}
+function rollInterval(hid){
+  return Math.max(CFG.dice.minInterval, CFG.heroes[hid].interval * G.run.heroes[hid].cdMul);
+}
+function heroX(hid){ return L.cardX[hid] + L.cardW / 2; }
+function liveHeroes(){
+  const out = [];
+  for (const hid of CFG.heroOrder) if (G.run.heroes[hid]) out.push(hid);
+  return out;
+}
+
+
+/* ============================================================================
+   세이브 / 로드
+   면 구조가 옛 형식(숫자 배열)이면 감지해서 런을 버린다.
+   ========================================================================== */
+function facesOk(f, hid){
+  if (!Array.isArray(f) || f.length !== CFG.heroes[hid].baseFaces.length) return false;
+  for (let i = 0; i < f.length; i++){
+    const x = f[i];
+    if (!x || typeof x !== 'object') return false;             // 옛 구조: faces:[1,1,1,2,2,2]
+    if (!CFG.weapons[x.w]) return false;
+    if (typeof x.c !== 'number' || !isFinite(x.c) || x.c < 1) return false;
+  }
+  return true;
+}
+function normHero(src, hid){
+  const h = newHero(hid);
+  h.faces = src.faces.map(f => ({ w:f.w, c:Math.max(1, Math.round(f.c)) }));
+  h.cdMul = (typeof src.cdMul === 'number' && src.cdMul > 0) ? Math.min(1, src.cdMul) : 1;
+  h.level = Math.max(1, Math.floor(src.level || 1));
+  h.xp    = Math.max(0, Math.floor(src.xp || 0));
+  return h;
+}
+
+function save(){
+  try {
+    localStorage.setItem(CFG.save.key, JSON.stringify({
+      ver:CFG.save.ver, meta:G.meta, run:G.run,
+    }));
+    G.saveDirty = false;
+  } catch (e) { /* 저장 불가 환경은 무시하고 계속 진행 */ }
+}
+function markSave(){ G.saveDirty = true; }
+
+function load(){
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(CFG.save.key) || 'null'); } catch (e) { d = null; }
+
+  if (d && d.ver !== CFG.save.ver){ G.wiped = true; d = null; }
+
+  G.meta = newMeta();
+  if (d && d.meta){
+    const m = d.meta;
+    if (m.cur) for (const k of CFG.reward.order){
+      if (typeof m.cur[k] === 'number' && isFinite(m.cur[k])) G.meta.cur[k] = m.cur[k];
+    }
+    if (m.wlv) for (const k in CFG.weapons){
+      if (typeof m.wlv[k] === 'number' && m.wlv[k] >= 1) G.meta.wlv[k] = Math.floor(m.wlv[k]);
+    }
+    // 2026-08-18: 주사위 등급. 옛 저장본엔 없으므로 없으면 실버(0) 그대로 둔다.
+    if (m.dice && typeof m.dice === 'object'){
+      for (const h of CFG.heroOrder){
+        const v = m.dice[h];
+        if (typeof v === 'number' && v >= 0) G.meta.dice[h] = clamp(Math.floor(v), 0, CFG.diceTiers.length - 1);
+      }
+    }
+    // 2026-08-18: 모은 스킬 카드. 옛 저장본엔 없으므로 없으면 빈 채로 둔다.
+    // CFG.skills.list 에 없는 id 는 버린다 — 이름을 바꾼 옛 카드가 유령으로 남지 않게
+    if (m.skills && typeof m.skills === 'object'){
+      for (const sk of CFG.skills.list){
+        const v = m.skills[sk.id];
+        if (typeof v === 'number' && v >= 1) G.meta.skills[sk.id] = clamp(Math.floor(v), 1, CFG.skills.maxLv);
+      }
+    }
+    if (typeof m.bestStage === 'number') G.meta.bestStage = m.bestStage;
+    if (typeof m.vibrate === 'boolean') G.meta.vibrate = m.vibrate;
+  }
+
+  G.run = newRun();
+  if (d && d.run && !CFG.dev.freshOnLoad){
+    const r = d.run;
+    // 영웅별 구조가 아니거나 면 구조가 옛 형식이면 런만 버리고 재화는 남긴다
+    let ok = !!r.heroes;
+    if (ok) for (const hid of CFG.heroOrder){
+      const h = r.heroes[hid];
+      if (h && !facesOk(h.faces, hid)){ ok = false; break; }
+    }
+    if (ok){
+      const n = G.run;
+      n.started = !!r.started;
+      n.stage   = clamp(Math.floor(r.stage || 1), 1, CFG.stage.perWorld);
+      n.wave    = clamp(Math.floor(r.wave  || 1), 1, waveTotal(n.stage));
+      n.wallHp  = clamp(Math.floor(r.wallHp), 1, CFG.wall.hp);
+      if (!isFinite(n.wallHp) || n.wallHp <= 0) n.wallHp = CFG.wall.hp;
+      for (const hid of CFG.heroOrder){
+        n.heroes[hid] = r.heroes[hid] ? normHero(r.heroes[hid], hid) : null;
+      }
+    } else {
+      G.wiped = true;
+    }
+  }
+}
+
+
+/* ============================================================================
+   판 시작 / 웨이브
+   ========================================================================== */
+function startStage(){
+  const r = G.run;
+  if (!liveHeroes().length){ G.screen = 'pick'; return; }   // 영웅 없이 들어갈 수 없다
+  G.enemies = []; G.bullets = []; G.parts = []; G.loot = []; G.rings = [];
+  r.started = true;
+  r.wave = clamp(r.wave, 1, waveTotal(r.stage));
+  G.b = {
+    phase:'wave',                     // wave | gap | cleanup | bosswarn | boss
+    waveT:CFG.wave.limit, gapT:0, spawnQ:[],
+    dice:{},                          // 영웅별 주사위 런타임
+    warnT:0, warnLeft:0,
+    boss:null, cards:null, lvHero:null,
+    menu:null, mimicCard:null, mimicHero:null,
+    rewardPhase:0, reward:null, chest:0,
+    pack:null,                        // 판이 끝날 때 나오는 카드팩(victory 에서 만든다)
+    // 미믹은 판당 한 마리. 어느 웨이브에 섞일지 판 시작 때 뽑는다
+    mimicWave:rndi(1, Math.max(1, normalWaves(G.run.stage) - 1)), mimicDone:false,
+  };
+  for (const hid of liveHeroes()) G.b.dice[hid] = newDiceRt(hid);
+  layout();
+  G.screen = 'battle';
+  beginWave();
+  save();
+}
+
+function newDiceRt(hid){
+  const t = CUBE_TARGET[0];
+  return {
+    rollT:CFG.heroes[hid].interval * 0.5, spinT:0, spinDur:CFG.dice.spin, face:0, pend:null,
+    // 정육면체 자세. ax/ay 는 계속 누적되므로 굴릴 때마다 앞으로 돈다
+    ax:t[0] + CFG.cube.tiltX, ay:t[1] + CFG.cube.tiltY,
+    ax0:0, ay0:0, ax1:t[0] + CFG.cube.tiltX, ay1:t[1] + CFG.cube.tiltY,
+    kick:0,                   // 발사 반동
+  };
+}
+
+function beginWave(){
+  const r = G.run, b = G.b;
+  b.phase = 'wave';
+  b.waveT = CFG.wave.limit;
+  const E = CFG.enemy;
+  const full = Math.min(E.perWaveMax, E.perWave + E.perWaveAdd * (r.stage - 1));
+  const total = normalWaves(r.stage);
+  const prog = total > 1 ? clamp((r.wave - 1) / (total - 1), 0, 1) : 1;
+  const n = Math.max(2, Math.round(full * (E.rampStart + (1 - E.rampStart) * prog)));
+  for (let i = 0; i < n; i++) b.spawnQ.push({ t:i * CFG.wave.spawnGap, wave:r.wave });
+  // 이 웨이브가 미믹 차례면 무작위 위치에 한 마리 끼워 넣는다
+  if (!b.mimicDone && r.wave === b.mimicWave){
+    b.mimicDone = true;
+    b.spawnQ.push({ t:rnd(0.3, Math.max(0.6, n * CFG.wave.spawnGap)), wave:r.wave, mimic:true });
+  }
+}
+
+function enemyStats(stage){
+  const E = CFG.enemy, k = stage - 1;
+  return {
+    hp:    Math.round(E.hp * Math.pow(E.hpGrow, k)),
+    speed: E.speed * Math.pow(E.speedGrow, k),
+  };
+}
+
+/* 이 판에서 어떤 종류가 나올지 뽑는다. 큰 놈 비율만 판별로 올리고
+   남은 몫을 작은/중간이 원래 weight 비율대로 나눠 갖는다 */
+function pickKind(stage, wave){
+  const B = CFG.bigRate, M = CFG.mix;
+  // 판 안에서의 진행도 0(첫 웨이브) → 1(마지막 일반 웨이브)
+  const total = normalWaves(stage);
+  const prog = total > 1 ? clamp((wave - 1) / (total - 1), 0, 1) : 1;
+
+  // 큰 놈 — 처음 세 웨이브에는 안 나오고, 뒤로 갈수록 확률이 오른다
+  if (wave >= B.fromWave){
+    const bigP = Math.min(B.max, B.base + B.perStage * (stage - 1)) * prog;
+    if (Math.random() < bigP) return 'big';
+  }
+  // 작은 놈 비중은 첫 웨이브 90% → 마지막 22% 로 줄어든다(그만큼 중간 놈이 늘어난다)
+  const smallP = M.smallStart + (M.smallEnd - M.smallStart) * prog;
+  return Math.random() < smallP ? 'small' : 'grunt';
+}
+
+function spawnEnemy(wave){
+  const st = G.run.stage, s = enemyStats(st);
+  const kind = pickKind(st, wave);
+  const T = CFG.etypes[kind];
+  const r  = CFG.enemy.r * T.rMul;
+  const hp = Math.max(1, Math.round(s.hp * T.hpMul));
+  G.enemies.push({
+    x:rnd(r + 10, L.w - r - 10), y:-r - rnd(0, 70), r:r,
+    hp:hp, hpMax:hp, inc:0,
+    sp:s.speed * T.spMul * rnd(0.9, 1.1), dmg:T.wallDmg, hitGap:T.hitGap,
+    kind:kind, xpMul:T.xpMul,
+    wave:wave, boss:false, atk:0, wob:rnd(0, TAU), flash:0, dead:false,
+  });
+}
+
+function spawnMimic(wave){
+  const s = enemyStats(G.run.stage), M = CFG.mimic;
+  const r  = CFG.enemy.r * M.rMul;
+  const hp = Math.max(1, Math.round(s.hp * M.hpMul));
+  G.enemies.push({
+    x:rnd(r + 12, L.w - r - 12), y:-r - rnd(0, 40), r:r,
+    hp:hp, hpMax:hp, inc:0,
+    sp:s.speed * M.spMul, dmg:M.wallDmg, hitGap:M.hitGap,
+    kind:'mimic', xpMul:M.xpMul,
+    wave:wave, boss:false, atk:0, wob:rnd(0, TAU), flash:0, dead:false,
+  });
+}
+
+function spawnBoss(){
+  const st = G.run.stage, s = enemyStats(st), B = CFG.boss;
+  let mul = B.hpMul;
+  if (B.bigAt.indexOf(st) >= 0) mul *= B.bigMul;
+  const r  = CFG.enemy.r * B.rMul;
+  const hp = Math.round(s.hp * mul);
+  const e = {
+    x:L.w / 2, y:-r - 20, r:r,
+    hp:hp, hpMax:hp, inc:0,
+    sp:s.speed * B.speedMul, dmg:B.wallDmg, hitGap:B.hitGap,
+    kind:'boss', xpMul:B.xpMul,
+    wave:-1, boss:true, atk:0, wob:0, flash:0, dead:false,
+  };
+  G.enemies.push(e);
+  G.b.boss = e;
+}
+
+
+/* ============================================================================
+   전투 업데이트
+   ========================================================================== */
+function updBattle(dt){
+  const r = G.run, b = G.b;
+  if (b.menu) return;                        // 설정 열려 있으면 전투 정지
+
+  for (let i = b.spawnQ.length - 1; i >= 0; i--){
+    const q = b.spawnQ[i];
+    q.t -= dt;
+    if (q.t <= 0){
+      if (q.mimic) spawnMimic(q.wave); else spawnEnemy(q.wave);
+      b.spawnQ.splice(i, 1);
+    }
+  }
+
+  updDice(dt);
+  updBullets(dt);
+  updEnemies(dt);
+  updParts(dt);
+
+  // 위 처리 중에 레벨업 3택이 열리거나 성벽이 무너졌으면 여기서 멈춘다.
+  // (보스를 죽인 프레임에 레벨업이 열리면 승리가 그것을 덮어써 카드가 사라진다)
+  if (G.screen !== 'battle') return;
+
+  if (b.phase === 'wave'){
+    b.waveT -= dt;
+    let pending = false, alive = false;
+    for (const q of b.spawnQ) if (q.wave === r.wave){ pending = true; break; }
+    for (const e of G.enemies) if (e.wave === r.wave){ alive = true; break; }
+    // 종료 조건: A 그 웨이브 전멸  B 제한 시간 경과
+    // B로 넘어가도 남은 적은 사라지지 않는다(스폰 큐도 그대로 두어 계속 나온다)
+    if ((!pending && !alive) || b.waveT <= 0){
+      if (r.wave < normalWaves(r.stage)){
+        r.wave++; b.phase = 'gap'; b.gapT = CFG.wave.gap; markSave();
+      } else {
+        // 일반 웨이브 끝. 보스판이면 마지막 웨이브 번호를 보스에게 넘긴다
+        if (isBoss(r.stage)) r.wave = waveTotal(r.stage);
+        b.phase = 'cleanup'; markSave();
+      }
+    }
+  } else if (b.phase === 'gap'){
+    b.gapT -= dt;
+    if (b.gapT <= 0) beginWave();
+  } else if (b.phase === 'cleanup'){
+    if (b.spawnQ.length === 0 && G.enemies.length === 0){
+      if (isBoss(r.stage)){
+        b.phase = 'bosswarn'; b.warnLeft = CFG.boss.warnFlash; b.warnT = CFG.boss.warnGap;
+      } else victory();
+    }
+  } else if (b.phase === 'bosswarn'){
+    b.warnT -= dt;
+    if (b.warnT <= 0){
+      b.warnLeft--; b.warnT = CFG.boss.warnGap;
+      if (b.warnLeft <= 0){ b.phase = 'boss'; spawnBoss(); }
+    }
+  } else if (b.phase === 'boss'){
+    if (b.boss && b.boss.dead) victory();
+  }
+}
+
+/* ---- 주사위 굴림 ---------------------------------------------------------- */
+function updDice(dt){
+  for (const hid of liveHeroes()){
+    if (G.b.dice[hid]) updHeroDice(hid, dt);
+  }
+}
+
+function updHeroDice(hid, dt){
+  const d = G.b.dice[hid];
+  if (d.kick > 0){ d.kick = Math.max(0, d.kick - dt * 7); }
+  if (d.spinT > 0){
+    d.spinT -= dt;
+    if (d.spinT < 0) d.spinT = 0;
+    // 굴러가는 동안 자세를 보간한다. 끝에서 감속(ease-out)
+    const p = 1 - d.spinT / d.spinDur;
+    const e = 1 - Math.pow(1 - clamp(p, 0, 1), 2.2);
+    d.ax = d.ax0 + (d.ax1 - d.ax0) * e;
+    d.ay = d.ay0 + (d.ay1 - d.ay0) * e;
+  }
+
+  if (d.pend){
+    d.pend.t -= dt;
+    while (d.pend && d.pend.t <= 0 && d.pend.left > 0){
+      if (!fireOne(hid, d.pend.w)){ d.pend = null; break; }   // 적이 없으면 남은 발사는 취소
+      d.pend.left--;
+      if (d.pend.left <= 0){ d.pend = null; break; }
+      d.pend.t += CFG.dice.shotGap;
+    }
+  }
+
+  d.rollT -= dt;
+  if (d.rollT <= 0){
+    // 사거리 안에 적이 없으면 굴리지 않고 다 찬 상태로 기다린다
+    if (!acquire()){ d.rollT = 0; return; }
+    const iv = rollInterval(hid);
+    d.rollT += iv;
+    if (d.rollT <= 0) d.rollT = iv;
+    doRoll(hid);
+  }
+}
+
+function doRoll(hid){
+  const d = G.b.dice[hid], h = G.run.heroes[hid], C = CFG.cube;
+  d.face  = rndi(0, h.faces.length - 1);
+  // 연출 길이는 굴림 주기에 맞춰 줄인다(주기가 짧으면 그만큼 빠르게 굴러 착지)
+  d.spinDur = Math.min(CFG.dice.spin, rollInterval(hid) * CFG.dice.spinMaxFrac);
+  d.spinT = d.spinDur;
+
+  // 정육면체가 굴러서 나온 면이 카메라를 보게 만든다.
+  // 현재 자세에서 최소 한 바퀴 이상 더 돌아 도착하도록 상대 각도로 잡는다.
+  const t = CUBE_TARGET[d.face];
+  d.ax0 = d.ax; d.ay0 = d.ay;
+  d.ax1 = d.ax0 + TAU * rndi(C.turnMin, C.turnMax) + angTo(d.ax0, t[0] + C.tiltX);
+  d.ay1 = d.ay0 + TAU * rndi(C.turnMin, C.turnMax) + angTo(d.ay0, t[1] + C.tiltY);
+
+  const f = h.faces[d.face];
+  // 나온 면의 무기로, 그 면의 발사 수만큼 쏜다. 착지하는 순간 발사한다
+  d.pend = { w:f.w, left:Math.max(1, Math.round(f.c)), t:d.spinDur };
+}
+
+/* a 에서 b 까지 앞으로 도는 최소 각(0 이상 TAU 미만) */
+function angTo(a, b){
+  let d = (b - a) % TAU;
+  if (d < 0) d += TAU;
+  return d;
+}
+
+/* 조준 규칙
+   1) 성벽에 붙은 적이 있으면 그중 '먼저 도착한 순서'로 친다.
+      다 같은 줄에 서기 때문에 화면상 위치로는 순서를 가릴 수 없다(크기 때문에 y 가 조금씩 다를 뿐).
+   2) 붙은 적이 없으면 성벽에 가장 가까운(= y 가 큰) 적을 친다.
+   오버킬 방지: 이미 예약된 피해(inc)로 죽을 적은 후보에서 빼되, 그런 적밖에 없으면 그거라도 친다.
+   아직 화면 위(사거리 밖)에 있는 적은 조준하지 않는다 */
+function acquire(){
+  let wBest = null, wBestSeq = Infinity, wAny = null, wAnySeq = Infinity;
+  let best = null, bestY = -1e9, any = null, anyY = -1e9;
+  for (const e of G.enemies){
+    if (e.dead) continue;
+    if (e.y + e.r < CFG.aim.minY) continue;
+    const free = e.hp - e.inc > 0;
+    if (e.atWall !== undefined){
+      if (e.atWall < wAnySeq){ wAny = e; wAnySeq = e.atWall; }
+      if (free && e.atWall < wBestSeq){ wBest = e; wBestSeq = e.atWall; }
+    } else {
+      if (e.y > anyY){ any = e; anyY = e.y; }
+      if (free && e.y > bestY){ best = e; bestY = e.y; }
+    }
+  }
+  return wBest || best || wAny || any;
+}
+
+function fireOne(hid, w){
+  const t = acquire();
+  if (!t) return false;
+  const M = CFG.missile[w];
+  const dmg = wdmg(w);                    // 발당 피해는 무기 종류가 결정한다
+  t.inc += dmg;                           // 예약
+  const ox = heroX(hid), oy = L.wallY - 6;
+  const sp = M.homing ? CFG.missile.spread : CFG.missile.spreadStraight;
+  let aimX = t.x, aimY = t.y;
+  if (!M.homing){
+    // 직선탄은 목표가 내려올 위치를 예측해 조준한다. 현재 위치를 쏘면 자꾸 빗나간다
+    const tt = Math.hypot(t.x - ox, t.y - oy) / M.speed;
+    aimY = t.y + t.sp * tt;
+  }
+  const a = Math.atan2(aimY - oy, aimX - ox) + rnd(-sp, sp);
+  G.bullets.push({
+    w:w, hid:hid, x:ox, y:oy, a:a, sp:M.speed, r:M.r, dmg:dmg, t:M.life,
+    tgt:t, ph:rnd(0, TAU), trail:[],
+  });
+
+  // 손맛 — 한 발마다 짧은 진동 + 발사 섬광 + 주사위 반동
+  buzz();
+  const d = G.b.dice[hid];
+  if (d) d.kick = 1;
+  const W = CFG.weapons[w];
+  for (let k = 0; k < 3; k++){
+    G.parts.push({ x:ox + rnd(-3, 3), y:oy + rnd(-2, 2),
+                   vx:Math.cos(a) * rnd(30, 90), vy:Math.sin(a) * rnd(30, 90),
+                   t:0.14, life:0.14, c:k ? W.col : '#fff', r:rnd(1.4, 2.6) });
+  }
+  return true;
+}
+
+function updBullets(dt){
+  for (let i = G.bullets.length - 1; i >= 0; i--){
+    const b = G.bullets[i], M = CFG.missile[b.w];
+    b.t -= dt;
+
+    let t = b.tgt;
+    // 죽었거나 목록에서 빠진 목표는 없는 것으로 본다
+    if (t && (t.dead || t.hp <= 0 || G.enemies.indexOf(t) < 0)){
+      t.inc -= b.dmg;
+      if (M.homing){                     // 유도탄은 다음 목표로 예약을 옮긴다
+        t = acquire();
+        b.tgt = t;
+        if (t) t.inc += b.dmg;
+      } else {
+        t = null; b.tgt = null;           // 직선탄은 그대로 날아간다
+      }
+    }
+    // 쫓을 적이 아예 없는 유도탄은 곧 사라진다(화면 구석에 박혀 남지 않게)
+    if (M.homing && !t && b.t > CFG.missile.orphanLife) b.t = CFG.missile.orphanLife;
+
+    if (M.homing && t){
+      b.a = angLerp(b.a, Math.atan2(t.y - b.y, t.x - b.x), Math.min(1, M.turn * dt));
+    }
+
+    b.trail.push(b.x, b.y);
+    if (b.trail.length > 12) b.trail.splice(0, b.trail.length - 12);
+    b.x += Math.cos(b.a) * b.sp * dt;
+    b.y += Math.sin(b.a) * b.sp * dt;
+
+    // 명중 판정 — 지나가는 길에 닿은 적을 맞힌다(직선탄은 예약 대상이 아닌 적도 맞을 수 있다)
+    let hit = null;
+    for (const e of G.enemies){
+      if (e.dead) continue;
+      const dx = e.x - b.x, dy = e.y - b.y, rr2 = (e.r + b.r) * (e.r + b.r);
+      if (dx * dx + dy * dy <= rr2){ hit = e; break; }
+    }
+    if (hit){
+      if (b.tgt) b.tgt.inc -= b.dmg;     // 예약 해제(맞은 적과 다를 수 있다)
+      hitEnemy(hit, b.dmg, b.hid, b.w);
+      const sr = splashR(b.w);      // 스킬 '폭발 확장'으로 넓어진 실제 반경(없으면 기본값)
+      if (sr){
+        // 화염 — 맞은 적의 중심을 기준으로 주변에 폭발 피해.
+        // 탄 위치(적의 표면)에서 재면 붙어 있는 적조차 반경 밖으로 나가 아무도 안 맞는다
+        const sd = Math.max(1, Math.round(b.dmg * M.splashMul));
+        const R2 = sr * sr;
+        for (const e of G.enemies){
+          if (e === hit || e.dead) continue;
+          const dx = e.x - hit.x, dy = e.y - hit.y;
+          if (dx * dx + dy * dy <= R2) hitEnemy(e, sd, b.hid, b.w);
+        }
+        G.rings.push({ x:hit.x, y:hit.y, r:sr, t:0.26, life:0.26, c:CFG.weapons[b.w].col });
+      }
+      boom(b.x, b.y, b.w);
+      G.bullets.splice(i, 1);
+      continue;
+    }
+
+    if (M.homing && t){
+      // 쫓을 목표가 있을 때만 화면 안에 붙여둔다. 지나쳐도 선회해서 되돌아온다.
+      // 목표가 없는데 붙여두면 화면 구석에 박혀 영원히 남는다(그 버그로 코너에 걸렸다)
+      b.x = clamp(b.x, 4, L.w - 4);
+      b.y = clamp(b.y, 4, L.wallY - 2);
+      if (b.t <= 0){
+        if (b.tgt) b.tgt.inc -= b.dmg;
+        G.bullets.splice(i, 1);
+      }
+    } else if (b.t <= 0 || b.y < -60 || b.y > L.h + 60 || b.x < -60 || b.x > L.w + 60){
+      // 목표가 없는 유도탄과 빗나간 직선탄은 그대로 날아가 사라진다
+      if (b.tgt) b.tgt.inc -= b.dmg;
+      G.bullets.splice(i, 1);
+    }
+  }
+}
+
+function hitEnemy(e, dmg, hid, w){
+  e.hp -= dmg;
+  e.flash = 0.12;
+  if (w === 'ice') e.slowT = CFG.ice.slowT;    // 얼음 화살 — 잠깐 느려진다
+  if (e.hp <= 0){ e.hp = 0; killEnemy(e, hid); }
+}
+
+function killEnemy(e, hid){
+  e.dead = true;
+  const n = e.boss ? 26 : 9;
+  for (let i = 0; i < n; i++){
+    G.parts.push({ x:e.x, y:e.y, vx:rnd(-100, 100), vy:rnd(-130, 40),
+                   t:0.5, life:0.5, c:e.boss ? '#ffd166' : CFG.col.enemy, r:rnd(1.4, 3) });
+  }
+  // 미믹은 잡으면 3택 없이 무작위 업그레이드 1개를 바로 준다
+  if (e.kind === 'mimic') mimicReward(hid);
+
+  // 경험치는 그 적을 죽인 탄의 영웅에게만 들어간다(영웅별 전용 경험치).
+  // 큰 놈과 보스는 그만큼 더 준다. 미믹은 xpMul 0 이라 경험치가 없다
+  const xm = (e.xpMul === undefined) ? 1 : e.xpMul;
+  if (xm > 0) gainXp(hid, CFG.enemy.xp * xm);
+}
+
+/* 미믹 보상 — 무작위 업그레이드 1개를 카드로 보여준다. 확인을 누르면 적용된다 */
+function mimicReward(hid){
+  const h = G.run.heroes[hid];
+  if (!h) return;
+  const pool = CFG.up.pool.filter(p => !p.hero);      // 영웅 배치 카드는 제외
+  const p = pickOne(pool);
+  const c = { id:p.id, name:p.name, foot:p.foot, add:p.add || 0, cd:p.cd || 0, hero:null, targets:[] };
+  if (p.faces){
+    const idx = [];
+    for (let j = 0; j < h.faces.length; j++) idx.push(j);
+    c.targets = shuffle(idx).slice(0, p.faces);
+  }
+  G.b.mimicHero = hid;
+  G.b.mimicCard = c;
+  G.screen = 'mimic';
+}
+
+/* 미믹 카드 확인 — 레벨업 없이 효과만 적용한다 */
+function takeMimicCard(){
+  const hid = G.b.mimicHero, c = G.b.mimicCard, h = G.run.heroes[hid];
+  if (h && c){
+    for (const j of c.targets) h.faces[j].c += c.add;
+    if (c.cd) h.cdMul *= c.cd;
+  }
+  G.b.mimicCard = null; G.b.mimicHero = null;
+  save();
+  G.screen = 'battle';
+  checkLevelUp();          // 미믹 처치 경험치로 레벨이 올랐을 수 있다
+}
+
+/* 레벨업/미믹 카드가 어느 영웅 것인지 */
+function cardHero(){
+  return (G.b && (G.b.lvHero || G.b.mimicHero)) || 'mage';
+}
+
+function updEnemies(dt){
+  for (const e of G.enemies){
+    if (e.dead) continue;
+    if (e.flash > 0) e.flash -= dt;
+    if (e.slowT > 0) e.slowT -= dt;                    // 얼음 화살 슬로우
+    e.wob += dt * 2.2;
+    const spd = e.sp * (e.slowT > 0 ? CFG.ice.slowMul : 1);
+    const stopY = L.wallY - e.r;
+    if (e.y < stopY){
+      e.y += spd * dt;
+      if (e.y > stopY) e.y = stopY;
+      e.x = clamp(e.x + Math.sin(e.wob) * 7 * dt, e.r + 4, L.w - e.r - 4);
+    } else {
+      // 성벽에 닿으면 멈추고 죽을 때까지 계속 때린다
+      e.y = stopY;
+      if (e.atWall === undefined) e.atWall = ++G.arriveSeq;   // 도착 순번(먼저 온 놈이 작다)
+      e.atk -= dt;
+      if (e.atk <= 0){ e.atk = e.hitGap || 1.4; hitWall(e); }
+    }
+  }
+  for (let i = G.enemies.length - 1; i >= 0; i--) if (G.enemies[i].dead) G.enemies.splice(i, 1);
+}
+
+function hitWall(e){
+  if (G.screen !== 'battle') return;   // 같은 프레임에 이미 게임오버 → 새 런의 성벽을 깎지 않도록
+  const r = G.run;
+  r.wallHp -= e.dmg;
+  // 화면 흔들림은 넣지 않는다(어지럽다는 지적). 성벽 파편으로만 피격을 알린다
+  for (let i = 0; i < 6; i++){
+    G.parts.push({ x:e.x, y:L.wallY + 2, vx:rnd(-50, 50), vy:rnd(-90, -10),
+                   t:0.4, life:0.4, c:'#ff6b6b', r:rnd(1.2, 2.4) });
+  }
+  markSave();
+  if (r.wallHp <= 0){ r.wallHp = 0; gameOver(); }
+}
+
+function boom(x, y, w){
+  const W = CFG.weapons[w], n = w === 'strong' ? 11 : 5;
+  for (let i = 0; i < n; i++){
+    G.parts.push({ x:x, y:y, vx:rnd(-80, 80), vy:rnd(-80, 80),
+                   t:0.26, life:0.26, c:i % 2 ? W.col : W.col2, r:rnd(1.2, 2.8) });
+  }
+}
+
+function updParts(dt){
+  for (let i = G.rings.length - 1; i >= 0; i--){
+    G.rings[i].t -= dt;
+    if (G.rings[i].t <= 0) G.rings.splice(i, 1);
+  }
+  for (let i = G.parts.length - 1; i >= 0; i--){
+    const p = G.parts[i];
+    p.t -= dt;
+    if (p.t <= 0){ G.parts.splice(i, 1); continue; }
+    p.vy += 240 * dt;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+  }
+}
+
+
+/* ============================================================================
+   XP / 레벨업 3택
+   ========================================================================== */
+function gainXp(hid, n){
+  const h = G.run.heroes[hid];
+  if (!h) return;
+  h.xp += n;
+  markSave();
+  if (G.screen === 'battle') checkLevelUp();
+}
+
+/* 이 판이 사실상 끝났는가 — 남은 적도, 나올 적도 없다.
+   보스판은 마지막 웨이브 뒤에 보스가 오므로 보스를 잡기 전까지는 끝난 게 아니다 */
+function stageEnding(){
+  const r = G.run, b = G.b;
+  if (!b) return false;
+  if (r.wave < waveTotal(r.stage)) return false;
+  if (b.spawnQ.length) return false;
+  for (const e of G.enemies) if (!e.dead) return false;
+  if (isBoss(r.stage) && !(b.boss && b.boss.dead)) return false;   // 보스가 아직 남았다
+  return true;
+}
+
+/* 영웅마다 자기 경험치로 따로 레벨업한다. 동시에 찼으면 순서대로 한 번씩 띄운다.
+   단 판의 마지막 적을 잡아 판이 끝나는 순간이면 업그레이드가 의미 없으니 띄우지 않는다 */
+function checkLevelUp(){
+  if (stageEnding()) return false;
+  for (const hid of liveHeroes()){
+    const h = G.run.heroes[hid];
+    if (h.xp >= xpNeed(h.level)){ openLevelUp(hid); return true; }
+  }
+  return false;
+}
+
+function openLevelUp(hid){
+  G.b.lvHero = hid;
+  G.b.cards  = makeCards(hid);
+  G.screen   = 'levelup';
+}
+
+/* 아직 전장에 안 나온 영웅(있으면) */
+function missingHero(){
+  for (const hid of CFG.heroOrder) if (!G.run.heroes[hid]) return hid;
+  return null;
+}
+
+function makeCards(hid){
+  const h = G.run.heroes[hid];
+  const ally = missingHero();
+  const pool = shuffle(CFG.up.pool.filter(p => !p.ally || ally));
+  const out = [];
+  for (let i = 0; i < Math.min(CFG.up.pick, pool.length); i++){
+    const p = pool[i];
+    const c = { id:p.id, name:p.name, foot:p.foot, add:p.add || 0, cd:p.cd || 0,
+                hero:p.ally ? ally : null, targets:[] };
+    if (p.ally) c.name = CFG.heroes[ally].name + ' 합류';
+    if (p.faces){
+      // 대상 면을 카드 생성 시점에 정해둔다 → 카드에 대상 무기 색과 현재값을 그릴 수 있다
+      const idx = [];
+      for (let j = 0; j < h.faces.length; j++) idx.push(j);
+      c.targets = shuffle(idx).slice(0, p.faces);
+    }
+    out.push(c);
+  }
+  return out;
+}
+
+function takeCard(c){
+  const hid = G.b.lvHero, h = G.run.heroes[hid];
+  for (const j of c.targets) h.faces[j].c += c.add;
+  if (c.cd) h.cdMul *= c.cd;
+
+  if (c.hero && !G.run.heroes[c.hero]){        // 궁수 배치 — 전용 주사위와 경험치가 함께 생긴다
+    G.run.heroes[c.hero] = newHero(c.hero);
+    G.b.dice[c.hero] = newDiceRt(c.hero);
+    layout();
+  }
+
+  h.xp = Math.max(0, h.xp - xpNeed(h.level));
+  h.level++;
+  save();
+
+  G.b.cards = null; G.b.lvHero = null;
+  G.screen = 'battle';
+  checkLevelUp();                              // 연속 레벨업(다른 영웅 포함)
+}
+
+
+/* ============================================================================
+   승리 / 패배
+   ========================================================================== */
+function makeReward(stage){
+  const R = CFG.reward, bm = isBoss(stage) ? R.bossMul : 1, out = {};
+  for (const k of R.order){
+    out[k] = Math.max(1, Math.round((R.base[k] + R.perStage[k] * (stage - 1)) * bm));
+  }
+  return out;
+}
+
+function victory(){
+  const r = G.run, b = G.b;
+  b.reward = makeReward(r.stage);
+  for (const k of CFG.reward.order) G.meta.cur[k] += b.reward[k];
+  if (r.stage > G.meta.bestStage) G.meta.bestStage = r.stage;
+
+  b.rewardPhase = 1; b.chest = 0;
+  b.pack = makePack(r.stage);        // 상자 다음에 뜨는 카드팩
+  makeLoot();
+  G.screen = 'reward';
+  save();
+}
+
+function makeLoot(){
+  G.loot = [];
+  const cx = L.w / 2, cy = L.h * 0.34;
+  for (let i = 0; i < CFG.reward.lootCount; i++){
+    const a = rnd(0, TAU), sp = rnd(50, 190);
+    G.loot.push({
+      x:cx, y:cy, vx:Math.cos(a) * sp, vy:Math.sin(a) * sp - 70,
+      fy:L.h * rnd(0.34, 0.56),        // 한 줄로 모이지 않게 조각마다 멈추는 높이를 다르게
+      kind:pickOne(CFG.reward.order), rot:rnd(0, TAU), vr:rnd(-3, 3), sc:rnd(0.85, 1.25),
+    });
+  }
+}
+
+/* 카드팩 만들기 — 판이 끝날 때 한 번.
+   ⚠ 만들어 둔 스킬이 아직 하나뿐이라 3택이 성립하지 않는다.
+     빈 자리는 재화 카드로 채운다. CFG.skills.list 의 soon 을 지워 스킬을 채워 넣는 만큼
+     재화 카드가 저절로 밀려나므로, 나중에 이 함수를 다시 손볼 필요가 없다.
+   ⚠ G.b 는 저장하지 않는다. 그래서 카드는 '고르는 순간' 바로 적용한다(takePackCard) —
+     적용을 뒤로 미루면 새로고침 한 번에 뽑은 카드가 사라진다 */
+function makePack(stage){
+  const n = CFG.skills.packPick, pool = shuffle(packableSkills().slice());
+  const cards = [];
+  for (let i = 0; i < n; i++){
+    const sk = pool[i];
+    if (sk){
+      cards.push({ kind:'skill', sk:sk });
+    } else {
+      const F = CFG.skills.filler;
+      cards.push({ kind:'cur', k:pickOne(CFG.reward.order), n:F.base + F.perStage * stage });
+    }
+  }
+  return { cards:shuffle(cards), picked:-1, flipT:0 };
+}
+
+/* 고른 카드를 그 자리에서 적용한다 */
+function takePackCard(i){
+  const b = G.b, pk = b.pack;
+  if (!pk || pk.picked >= 0) return;
+  const c = pk.cards[i];
+  if (!c) return;
+  pk.picked = i; pk.flipT = 0;
+  if (c.kind === 'skill'){
+    gainSkill(c.sk.id);                 // 이미 있으면 레벨이 오른다
+    c.lvAfter = skillLv(c.sk.id);
+  } else {
+    G.meta.cur[c.k] += c.n;
+    save();
+  }
+  b.rewardPhase = 5;
+}
+
+function updReward(dt){
+  const b = G.b;
+  for (const p of G.loot){
+    p.vy += 420 * dt;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.rot += p.vr * dt;
+    if (p.y > p.fy){ p.y = p.fy; p.vy *= -0.32; p.vx *= 0.72; p.vr *= 0.6; }
+    p.x = clamp(p.x, 14, L.w - 14);
+  }
+  if (b.rewardPhase === 2){
+    b.chest += dt / CFG.reward.chestFill;
+    if (b.chest >= 1){ b.chest = 1; b.rewardPhase = 3; }   // 100%에서 상자가 열린다
+  }
+  if (b.rewardPhase === 5 && b.pack && b.pack.flipT < CFG.skills.packFlip){
+    b.pack.flipT = Math.min(CFG.skills.packFlip, b.pack.flipT + dt);
+  }
+}
+
+function rewardTap(){
+  const b = G.b;
+  if (b.rewardPhase === 1){ b.rewardPhase = 2; b.chest = 0; return; }
+  // 상자를 열면 카드팩이 나온다. 팩에서는 카드를 눌러야 넘어간다(빈 곳 탭은 무시)
+  if (b.rewardPhase === 3){
+    if (!b.pack) b.pack = makePack(G.run.stage);
+    b.rewardPhase = 4;
+    return;
+  }
+  if (b.rewardPhase === 5 && b.pack.flipT >= CFG.skills.packFlip) nextStage();
+}
+
+function nextStage(){
+  const r = G.run;
+  if (r.stage >= CFG.stage.perWorld){
+    // 월드 1 완료. 월드 2는 다음 단계이므로 런을 초기화한다
+    G.worldClear = true;
+    G.run = newRun();
+    save();
+    layout();
+    G.screen = 'main';
+    return;
+  }
+  // 한 판이 끝나면 홈으로 나온다. 다음 판은 홈의 '전투' 버튼으로 들어간다
+  r.stage++; r.wave = 1;
+  resetHeroes(r);
+  // David 지정: 새 판이 시작되면 성벽 체력도 원복된다.
+  // (관찰된 원본은 30판 내내 하나의 체력으로 이어졌지만, 주사위가 판마다 리셋되는
+  //  지금 구조에서는 성벽까지 누적되면 판 3~4에서 무조건 막힌다)
+  r.wallHp = CFG.wall.hp;
+  save();
+  G.screen = 'main';
+}
+
+function gameOver(){
+  const r = G.run;
+  G.lastStage = r.stage;
+  // 패널티 없음. 판 1 로 되돌리지 않고 그 판에 머문다 — 같은 판을 다시 도전한다.
+  // 그 판 안에서 쌓은 면값·굴림 주기·영웅 배치만 초기화되고 성벽은 원복된다.
+  // 재화와 무기 레벨은 영구다
+  r.wave = 1;
+  r.wallHp = CFG.wall.hp;
+  resetHeroes(r);
+  save();
+  layout();
+  G.screen = 'gameover';
+}
+
+
+/* ============================================================================
+   그리기 — 기본 도구
+   ========================================================================== */
+let HIT = [];
+
+function rr(x, y, w, h, r){
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y,     x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x,     y + h, r);
+  ctx.arcTo(x,     y + h, x,     y,     r);
+  ctx.arcTo(x,     y,     x + w, y,     r);
+  ctx.closePath();
+}
+
+function txt(s, x, y, size, col, align, weight){
+  ctx.fillStyle = col || '#fff';
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = (weight || 'bold') + ' ' + size + 'px system-ui,-apple-system,"Malgun Gothic",sans-serif';
+  ctx.fillText(s, x, y);
+}
+
+function txtOut(s, x, y, size, col, align, lw){
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold ' + size + 'px system-ui,-apple-system,"Malgun Gothic",sans-serif';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = lw || Math.max(3, size * 0.22);
+  ctx.strokeStyle = '#1b1f18';
+  ctx.strokeText(s, x, y);
+  ctx.fillStyle = col || '#fff';
+  ctx.fillText(s, x, y);
+}
+
+function bar(x, y, w, h, p, col, bg){
+  ctx.fillStyle = bg || '#1b2230';
+  rr(x, y, w, h, h / 2); ctx.fill();
+  p = clamp(p, 0, 1);
+  if (p > 0){
+    ctx.save(); rr(x, y, w, h, h / 2); ctx.clip();
+    ctx.fillStyle = col;
+    ctx.fillRect(x, y, w * p, h);
+    ctx.restore();
+  }
+}
+
+function button(x, y, w, h, label, fn, col, size){
+  ctx.fillStyle = col || CFG.col.card;
+  rr(x, y, w, h, 10); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  rr(x + 3, y + 3, w - 6, h * 0.42, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2;
+  rr(x, y, w, h, 10); ctx.stroke();
+  txt(label, x + w / 2, y + h / 2, size || 16, '#fff', 'center');
+  HIT.push({ x:x, y:y, w:w, h:h, fn:fn });
+}
+
+
+/* ---- 무기 아이콘 ---------------------------------------------------------
+   물결(빠름) = 청록 초승달 스워시 / 화염(강함) = 주황 불덩이 + 불꽃 꼬리      */
+function icoFast(x, y, s){
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 10, s / 10);
+  const g = ctx.createLinearGradient(-9, -8, 8, 7);
+  g.addColorStop(0, '#f2feff'); g.addColorStop(0.45, CFG.weapons.fast.col); g.addColorStop(1, CFG.weapons.fast.col2);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(-9, 3);
+  ctx.bezierCurveTo(-9.5, -8, 1, -11.5, 9.5, -6.5);
+  ctx.bezierCurveTo(3, -6, -1.5, -0.5, -2.5, 7);
+  ctx.bezierCurveTo(-5, 8, -8.5, 6.5, -9, 3);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.beginPath(); ctx.ellipse(-3.6, -4.4, 3.4, 1.9, -0.5, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function icoStrong(x, y, s){
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 10, s / 10);
+  ctx.fillStyle = CFG.weapons.strong.col2;
+  ctx.beginPath();
+  ctx.moveTo(0.5, -6.5); ctx.lineTo(11.5, -8.5); ctx.lineTo(3.5, -1.5);
+  ctx.lineTo(11.5, 0.5); ctx.lineTo(2.5, 3.5);  ctx.lineTo(8.5, 8);
+  ctx.lineTo(-1, 6);
+  ctx.closePath(); ctx.fill();
+  const g = ctx.createRadialGradient(-4, -3, 0.5, -2, 0, 8.5);
+  g.addColorStop(0, '#fff6cf'); g.addColorStop(0.45, CFG.weapons.strong.col); g.addColorStop(1, '#f2691a');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(-2, 0, 6.6, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+/* 화살 아이콘. thin=true 면 속사(가는 화살 두 개), false 면 일반 샷(굵은 화살 하나) */
+function icoArrowIcon(x, y, s, W, thin){
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 10, s / 10); ctx.rotate(-0.7);
+  const draw = (oy, k) => {
+    ctx.fillStyle = W.col2;
+    ctx.fillRect(-9 * k, oy - 1.1 * k, 15 * k, 2.2 * k);
+    ctx.fillStyle = W.col;
+    ctx.beginPath();
+    ctx.moveTo(10.5 * k, oy); ctx.lineTo(4.5 * k, oy - 4.6 * k); ctx.lineTo(4.5 * k, oy + 4.6 * k);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-9.5 * k, oy); ctx.lineTo(-4 * k, oy - 4.2 * k);
+    ctx.lineTo(-2.4 * k, oy); ctx.lineTo(-4 * k, oy + 4.2 * k);
+    ctx.closePath(); ctx.fill();
+  };
+  if (thin){ draw(-3.4, 0.72); draw(3.4, 0.72); }   // 속사 = 두 발
+  else     { draw(0, 1.0); }                        // 일반 샷 = 한 발
+  ctx.restore();
+}
+
+/* 얼음 화살 아이콘 — 화살 + 결정 조각 */
+function icoIce(x, y, s){
+  icoArrowIcon(x, y, s * 0.95, CFG.weapons.ice, false);
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 10, s / 10);
+  ctx.fillStyle = '#eafaff';
+  for (const p of [[-6, 5], [4, -6], [7, 4]]){
+    ctx.beginPath();
+    ctx.moveTo(p[0], p[1] - 2.6); ctx.lineTo(p[0] + 1.8, p[1]);
+    ctx.lineTo(p[0], p[1] + 2.6); ctx.lineTo(p[0] - 1.8, p[1]);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function icoWeapon(w, x, y, s){
+  if (w === 'fast')        icoFast(x, y, s);
+  else if (w === 'strong') icoStrong(x, y, s);
+  else if (w === 'swift')  icoArrowIcon(x, y, s, CFG.weapons.swift, true);
+  else                     icoIce(x, y, s);
+}
+
+
+/* ---- 면 타일 ------------------------------------------------------------
+   관찰된 원본 타일: 파란 라운드 사각 + 무기 아이콘 + 큰 흰 숫자(발사 수)     */
+function faceTile(x, y, w, h, f, opt){
+  opt = opt || {};
+  const pal = opt.pal || [CFG.col.tile, CFG.col.tile2];
+  const g = ctx.createLinearGradient(x, y, x, y + h);
+  g.addColorStop(0, pal[0]); g.addColorStop(1, pal[1]);
+  ctx.fillStyle = g; rr(x, y, w, h, Math.min(10, w * 0.18)); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  rr(x + w * 0.08, y + h * 0.07, w * 0.84, h * 0.3, 6); ctx.fill();
+  if (opt.hi){
+    ctx.strokeStyle = '#ffe98a'; ctx.lineWidth = 3;
+    rr(x, y, w, h, Math.min(10, w * 0.18)); ctx.stroke();
+  }
+  ctx.save();                                   // 아이콘이 타일 밖으로 새지 않게 자른다
+  rr(x, y, w, h, Math.min(10, w * 0.18)); ctx.clip();
+  icoWeapon(f.w, x + w * 0.62, y + h * 0.3, Math.min(w, h) * 0.24);
+  ctx.restore();
+  txtOut(String(f.c), x + w * 0.44, y + h * 0.62, Math.round(h * 0.42), '#fff', 'center');
+}
+
+
+/* ---- 정육면체 주사위 -----------------------------------------------------
+   6면을 정육면체의 여섯 방향에 그대로 배정한다.
+   n = 바깥 방향, o = 한 코너(단위는 반변), u/v = 면 위의 가로·세로 방향.
+   u 가 화면 오른쪽, v 가 화면 아래로 가도록 잡아서 글자가 뒤집히지 않는다.
+   모델 좌표는 y 가 위쪽이 +, 화면에 그릴 때 뒤집는다.                      */
+const CUBE_FACES = [
+  { n:[0, 0, 1], o:[-1,  1,  1], u:[1, 0, 0], v:[0, -1,  0] }, // 면0  +Z
+  { n:[0, 0,-1], o:[ 1,  1, -1], u:[-1,0, 0], v:[0, -1,  0] }, // 면1  -Z
+  { n:[1, 0, 0], o:[ 1,  1,  1], u:[0, 0,-1], v:[0, -1,  0] }, // 면2  +X
+  { n:[-1,0, 0], o:[-1,  1, -1], u:[0, 0, 1], v:[0, -1,  0] }, // 면3  -X
+  { n:[0, 1, 0], o:[-1,  1, -1], u:[1, 0, 0], v:[0,  0,  1] }, // 면4  +Y
+  { n:[0,-1, 0], o:[-1, -1,  1], u:[1, 0, 0], v:[0,  0, -1] }, // 면5  -Y
+];
+/* 각 면을 카메라 쪽으로 돌리는 자세 (ax, ay) */
+const CUBE_TARGET = [
+  [0, 0], [0, Math.PI], [0, -Math.PI / 2], [0, Math.PI / 2],
+  [Math.PI / 2, 0], [-Math.PI / 2, 0],
+];
+
+/* X축 → Y축 순서로 회전 */
+function rot3(p, ax, ay){
+  const ca = Math.cos(ax), sa = Math.sin(ax), cb = Math.cos(ay), sb = Math.sin(ay);
+  const y1 = p[1] * ca - p[2] * sa;
+  const z1 = p[1] * sa + p[2] * ca;
+  const x1 = p[0];
+  return [ x1 * cb + z1 * sb, y1, -x1 * sb + z1 * cb ];
+}
+
+/* 임의 다각형을 모서리 둥글게 — 기울어진 사각형에도 쓸 수 있다 */
+function roundPoly(pts, r){
+  const n = pts.length;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++){
+    const p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n];
+    const d1 = Math.hypot(p0.x - p1.x, p0.y - p1.y) || 1;
+    const d2 = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+    const rr2 = Math.min(r, d1 * 0.45, d2 * 0.45);
+    const a = { x:p1.x + (p0.x - p1.x) / d1 * rr2, y:p1.y + (p0.y - p1.y) / d1 * rr2 };
+    const b = { x:p1.x + (p2.x - p1.x) / d2 * rr2, y:p1.y + (p2.y - p1.y) / d2 * rr2 };
+    if (i === 0) ctx.moveTo(a.x, a.y); else ctx.lineTo(a.x, a.y);
+    ctx.quadraticCurveTo(p1.x, p1.y, b.x, b.y);
+  }
+  ctx.closePath();
+}
+
+/* 한 면의 내용 — (0,0)~(side,side) 안에 그린다. 호출부가 기울여 놓는다 */
+function cubeFaceContent(side, f, pal){
+  const g = ctx.createLinearGradient(0, 0, 0, side);
+  g.addColorStop(0, pal[0]); g.addColorStop(1, pal[1]);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, side, side);
+  ctx.fillStyle = 'rgba(255,255,255,0.26)';           // 광택
+  ctx.beginPath();
+  ctx.ellipse(side * 0.34, side * 0.2, side * 0.3, side * 0.11, -0.25, 0, TAU);
+  ctx.fill();
+  icoWeapon(f.w, side * 0.7, side * 0.28, side * 0.21);
+  txtOut(String(f.c), side * 0.44, side * 0.6, Math.round(side * 0.44), '#fff', 'center',
+         Math.max(3, side * 0.09));
+}
+
+/* 정육면체 주사위 하나 */
+function drawCube(cx, cy, side, faces, ax, ay, pal){
+  const h = side / 2, vis = [];
+  for (let i = 0; i < CUBE_FACES.length; i++){
+    const F = CUBE_FACES[i];
+    const n = rot3(F.n, ax, ay);
+    if (n[2] <= 0.03) continue;                       // 카메라를 등진 면은 건너뛴다
+    const o  = rot3([F.o[0] * h, F.o[1] * h, F.o[2] * h], ax, ay);
+    const du = rot3([F.u[0] * side, F.u[1] * side, F.u[2] * side], ax, ay);
+    const dv = rot3([F.v[0] * side, F.v[1] * side, F.v[2] * side], ax, ay);
+    vis.push({ i:i, n:n, o:o, du:du, dv:dv, z:o[2] + (du[2] + dv[2]) / 2 });
+  }
+  vis.sort((a, b) => a.z - b.z);                      // 먼 면부터
+
+  for (const V of vis){
+    const ox = cx + V.o[0], oy = cy - V.o[1];         // 정사영, 화면 y 뒤집기
+    const ux = V.du[0], uy = -V.du[1];
+    const vx = V.dv[0], vy = -V.dv[1];
+    const quad = [
+      { x:ox, y:oy }, { x:ox + ux, y:oy + uy },
+      { x:ox + ux + vx, y:oy + uy + vy }, { x:ox + vx, y:oy + vy },
+    ];
+    ctx.save();
+    roundPoly(quad, side * CFG.cube.round);
+    ctx.clip();
+    ctx.save();
+    ctx.transform(ux / side, uy / side, vx / side, vy / side, ox, oy);
+    cubeFaceContent(side, faces[V.i], pal);
+    ctx.restore();
+    // 카메라를 덜 향한 면은 어둡게 — 입체감
+    const dark = 1 - clamp(V.n[2], 0, 1);
+    if (dark > 0.02){
+      ctx.fillStyle = 'rgba(6,20,40,' + (dark * 0.62).toFixed(3) + ')';
+      roundPoly(quad, side * CFG.cube.round); ctx.fill();
+    }
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(10,40,80,0.35)'; ctx.lineWidth = 1;
+    roundPoly(quad, side * CFG.cube.round); ctx.stroke();
+  }
+}
+
+
+/* ---- 영웅 초상화 ---------------------------------------------------------
+   슬롯에 들어가는 얼굴. 원본 이미지를 쓰지 않고 캔버스로 직접 그린다.      */
+function heroPortrait(hid, x, y, w, h){
+  ctx.save();
+  rr(x, y, w, h, 8); ctx.clip();
+  const g = ctx.createLinearGradient(x, y, x, y + h);
+  if (hid === 'mage'){ g.addColorStop(0, '#3f79c8'); g.addColorStop(1, '#1c3f7a'); }
+  else               { g.addColorStop(0, '#5aa04a'); g.addColorStop(1, '#254d24'); }
+  ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+
+  const cx = x + w / 2, by = y + h;
+  const s = h / 52;                                   // 52 기준으로 그려서 스케일
+  ctx.save(); ctx.translate(cx, by); ctx.scale(s, s);
+  if (hid === 'mage'){
+    ctx.fillStyle = '#7a5a3a';                        // 지팡이
+    ctx.fillRect(11, -34, 3.4, 34);
+    ctx.fillStyle = '#2b4f96';                        // 어깨
+    ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo(15,2); ctx.lineTo(-15,2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#e8c9a0';                        // 얼굴
+    ctx.beginPath(); ctx.ellipse(0,-22, 8.4, 9.4, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#f2f4f6';                        // 수염
+    ctx.beginPath(); ctx.moveTo(-7,-18); ctx.quadraticCurveTo(0,-1, 7,-18); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#3f79c8';                        // 고깔모자
+    ctx.beginPath(); ctx.moveTo(-2,-46); ctx.lineTo(10,-27); ctx.lineTo(-11,-27); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ffd54a';
+    ctx.fillRect(-11.5,-28.6, 22, 3.4);
+    ctx.fillStyle = '#1a1f2a';                        // 눈
+    ctx.beginPath(); ctx.arc(-3.4,-23, 1.5, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc( 3.4,-23, 1.5, 0, TAU); ctx.fill();
+  } else {
+    ctx.strokeStyle = '#8b5a2b'; ctx.lineWidth = 2.4; // 활
+    ctx.beginPath(); ctx.arc(-8,-22, 10.5, -1.2, 1.2); ctx.stroke();
+    ctx.strokeStyle = '#e9eef2'; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(-4.2,-31.5); ctx.lineTo(-4.2,-12.5); ctx.stroke();
+    ctx.fillStyle = '#2f6b2c';                        // 어깨
+    ctx.beginPath(); ctx.moveTo(2,-13); ctx.lineTo(16,2); ctx.lineTo(-12,2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#e8c9a0';                        // 얼굴
+    ctx.beginPath(); ctx.ellipse(3,-21, 8.6, 9.6, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#57913f';                        // 후드
+    ctx.beginPath(); ctx.arc(3,-23, 11, Math.PI, TAU); ctx.fill();
+    ctx.fillRect(-8,-24.4, 22, 4.2);
+    ctx.fillStyle = '#1a1f2a';
+    ctx.beginPath(); ctx.arc(0.2,-20, 1.6, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(6.4,-20, 1.6, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 2;
+  rr(x, y, w, h, 8); ctx.stroke();
+}
+
+
+/* ---- 재화 아이콘 --------------------------------------------------------- */
+function icoCur(kind, x, y, s){
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 10, s / 10);
+  ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(20,24,18,0.65)'; ctx.lineWidth = 1.4;
+  if (kind === 'dagger'){
+    ctx.fillStyle = CFG.col.dagger;
+    ctx.beginPath();
+    ctx.moveTo(9, -8); ctx.lineTo(0, 3); ctx.lineTo(-4, 1); ctx.lineTo(4, -9);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(-5.5, 4.5, 3.4, 0, TAU); ctx.stroke();
+  } else if (kind === 'crystal'){
+    ctx.fillStyle = CFG.col.crystal;
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(5.5, 0); ctx.lineTo(0, 9); ctx.lineTo(-5.5, 0);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(2.4, 0); ctx.lineTo(0, 9); ctx.lineTo(-1.4, 0);
+    ctx.closePath(); ctx.fill();
+  } else if (kind === 'gold'){
+    ctx.fillStyle = CFG.col.gold;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++){
+      const a = -Math.PI / 2 + i * TAU / 6;
+      const px = Math.cos(a) * 8.5, py = Math.sin(a) * 8.5;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#7a5406'; ctx.fillRect(-2.6, -2.2, 5.2, 4.4);
+  } else if (kind === 'amethyst'){
+    ctx.fillStyle = CFG.col.amethyst;
+    ctx.beginPath();
+    ctx.moveTo(0, -9); ctx.lineTo(6, -4.5); ctx.lineTo(6, 4.5);
+    ctx.lineTo(0, 9);  ctx.lineTo(-6, 4.5); ctx.lineTo(-6, -4.5);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(3, -4); ctx.lineTo(0, 2); ctx.lineTo(-3, -4);
+    ctx.closePath(); ctx.fill();
+  } else {
+    ctx.fillStyle = '#e9eef2';
+    ctx.beginPath(); ctx.arc(0, 2, 7.5, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.save();
+    ctx.beginPath(); ctx.arc(0, 2, 7.5, 0, TAU); ctx.clip();
+    ctx.fillStyle = CFG.col.potion; ctx.fillRect(-8, -1, 16, 12);
+    ctx.restore();
+    ctx.fillStyle = '#8e9aa2'; ctx.fillRect(-2.6, -9, 5.2, 4.4); ctx.strokeRect(-2.6, -9, 5.2, 4.4);
+  }
+  ctx.restore();
+}
+
+
+/* ============================================================================
+   그리기 — 전투
+   ========================================================================== */
+function drawField(){
+  ctx.fillStyle = CFG.col.field;
+  ctx.fillRect(0, 0, L.w, L.wallY);
+  ctx.fillStyle = CFG.col.field2;
+  for (let y = 40; y < L.wallY; y += 96) ctx.fillRect(0, y, L.w, 34);
+}
+
+/* 성벽 윗면은 완만한 곡선이다. quadraticCurveTo 와 같은 식을 써야 총안이 곡선에 붙는다 */
+function wallTopAt(u){ return L.wallY + 10 - 44 * u + 44 * u * u; }
+
+function drawWall(){
+  const y = L.wallY;
+  // 곡선 아래는 전부 밝은 성벽/바닥
+  ctx.fillStyle = CFG.col.wall;
+  ctx.beginPath();
+  ctx.moveTo(0, y + 10);
+  ctx.quadraticCurveTo(L.w / 2, y - 12, L.w, y + 10);
+  ctx.lineTo(L.w, L.h); ctx.lineTo(0, L.h);
+  ctx.closePath(); ctx.fill();
+  // 총안 — 곡선 위로 솟은 같은 색 블록(사이 틈으로 초원이 보여 성벽처럼 읽힌다)
+  const n = 9, bw = L.w / n;
+  for (let i = 0; i < n; i++){
+    const cx = i * bw + bw * 0.5;
+    const by = wallTopAt(cx / L.w);
+    ctx.fillStyle = CFG.col.wall;
+    ctx.fillRect(cx - bw * 0.32, by - 12, bw * 0.64, 14);
+    ctx.fillStyle = CFG.col.wall2;
+    ctx.fillRect(cx - bw * 0.32, by - 12, bw * 0.64, 3);
+  }
+  // 성벽 아래 바닥 경계
+  ctx.fillStyle = CFG.col.ground;
+  ctx.fillRect(0, y + 30, L.w, L.h - y - 30);
+  // 성벽 체력 명판
+  const r = G.run, pw = 96, px = (L.w - pw) / 2, py = y - 4;
+  ctx.fillStyle = CFG.col.wall;
+  rr(px, py, pw, 26, 8); ctx.fill();
+  ctx.strokeStyle = CFG.col.wall2; ctx.lineWidth = 2;
+  rr(px, py, pw, 26, 8); ctx.stroke();
+  txtOut(String(r.wallHp), px + pw * 0.42, py + 13, 17, '#6b7280', 'center', 3);
+  ctx.fillStyle = '#8b93a0';
+  ctx.fillRect(px + pw - 26, py + 6, 13, 14);
+  ctx.fillStyle = CFG.col.wall;
+  ctx.fillRect(px + pw - 23, py + 9, 3, 4);
+  ctx.fillRect(px + pw - 17, py + 9, 3, 4);
+}
+
+function drawEnemy(e){
+  const r = e.r;
+  ctx.save();
+  ctx.translate(e.x, e.y + Math.sin(e.wob * 2) * r * 0.07);
+
+  ctx.fillStyle = 'rgba(20,26,16,0.22)';
+  ctx.beginPath(); ctx.ellipse(0, r * 0.95, r * 0.8, r * 0.24, 0, 0, TAU); ctx.fill();
+
+  const kind = e.boss ? 'boss' : (e.kind || 'grunt');
+
+  if (kind === 'mimic'){
+    drawMimicBody(r, e);
+    ctx.restore();
+    if (e.hp < e.hpMax){
+      const w = Math.max(30, r * 2.6);
+      bar(e.x - w / 2, e.y - r - 14, w, 7, e.hp / e.hpMax, CFG.col.hpFill, CFG.col.hpTrack);
+    }
+    return;
+  }
+
+  const isBig   = kind === 'big' || kind === 'boss';
+  const isSmall = kind === 'small';
+
+  // 몸통 — 큰 놈은 진하고 둥글넓적, 작은 놈은 밝고 갸름
+  const g = ctx.createLinearGradient(0, -r, 0, r);
+  if (isBig)        { g.addColorStop(0, '#7fae4c'); g.addColorStop(1, '#3c5c25'); }
+  else if (isSmall) { g.addColorStop(0, '#9ccb62'); g.addColorStop(1, '#5c8038'); }
+  else              { g.addColorStop(0, CFG.col.enemy); g.addColorStop(1, CFG.col.enemy2); }
+  ctx.fillStyle = g;
+  ctx.strokeStyle = CFG.col.enemyLine;
+  ctx.lineWidth = Math.max(1.4, r * (isBig ? 0.1 : 0.16));
+  ctx.beginPath();
+  if (isBig){
+    // 아래가 넓은 둥근 덩어리
+    ctx.moveTo(0, -r * 1.05);
+    ctx.bezierCurveTo(r * 1.15, -r * 0.75, r * 1.1, r * 0.8, 0, r * 0.8);
+    ctx.bezierCurveTo(-r * 1.1, r * 0.8, -r * 1.15, -r * 0.75, 0, -r * 1.05);
+  } else {
+    ctx.moveTo(0, -r * 1.15);
+    ctx.bezierCurveTo(r * 0.95, -r * 0.7, r * 0.95, r * 0.85, 0, r * 0.85);
+    ctx.bezierCurveTo(-r * 0.95, r * 0.85, -r * 0.95, -r * 0.7, 0, -r * 1.15);
+  }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // 큰 놈은 표면에 덩어리 자국
+  if (isBig){
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.beginPath(); ctx.ellipse(-r * 0.34, -r * 0.44, r * 0.3, r * 0.2, -0.4, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse( r * 0.4,  r * 0.1,  r * 0.24, r * 0.16, 0.3, 0, TAU); ctx.fill();
+  }
+
+  // 발
+  if (!isSmall){
+    ctx.fillStyle = isBig ? '#33501f' : CFG.col.enemy2;
+    ctx.beginPath(); ctx.ellipse(-r * 0.36, r * 0.84, r * 0.24, r * 0.13, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse( r * 0.36, r * 0.84, r * 0.24, r * 0.13, 0, 0, TAU); ctx.fill();
+  }
+
+  // 눈 — 큰 놈은 몸에 비해 작다
+  const eo = isBig ? 0.2 : 0.28, es = isBig ? 0.09 : 0.13;
+  ctx.fillStyle = '#15190f';
+  ctx.beginPath(); ctx.ellipse(-r * eo, -r * 0.12, r * es, r * es * 1.5, 0, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( r * eo, -r * 0.12, r * es, r * es * 1.5, 0, 0, TAU); ctx.fill();
+
+  if (kind === 'grunt' || kind === 'boss'){
+    // 벌린 입 + 빨간 혀 (참고 화면의 중간 놈)
+    ctx.fillStyle = '#15190f';
+    ctx.beginPath(); ctx.ellipse(0, r * 0.32, r * 0.26, r * 0.2, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e2564f';
+    ctx.beginPath(); ctx.ellipse(0, r * 0.48, r * 0.12, r * 0.22, 0, 0, TAU); ctx.fill();
+    // 오른쪽 꼬리
+    ctx.fillStyle = CFG.col.enemy2;
+    ctx.beginPath(); ctx.ellipse(r * 0.86, r * 0.5, r * 0.24, r * 0.17, -0.5, 0, TAU); ctx.fill();
+  } else if (isBig){
+    // 큰 놈은 혀 없이 작은 입만 (참고 화면과 동일)
+    ctx.fillStyle = '#15190f';
+    ctx.beginPath(); ctx.ellipse(0, r * 0.2, r * 0.13, r * 0.08, 0, 0, TAU); ctx.fill();
+  }
+
+  if (e.slowT > 0){
+    // 얼어붙은 표시 — 하늘색 덮개 + 서리 조각
+    ctx.globalAlpha = 0.42;
+    ctx.fillStyle = CFG.weapons.ice.col;
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.95, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = '#eafaff';
+    for (let i = 0; i < 3; i++){
+      const a = e.wob * 1.3 + i * TAU / 3;
+      ctx.fillRect(Math.cos(a) * r * 0.6 - 1.4, Math.sin(a) * r * 0.6 - 1.4, 2.8, 2.8);
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (e.flash > 0){
+    ctx.globalAlpha = clamp(e.flash * 3.5, 0, 0.45);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.92, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+
+  // 피해를 입은 적에게만 체력 막대
+  if (e.hp < e.hpMax){
+    const w = Math.max(30, r * 2.6), h = 7;
+    bar(e.x - w / 2, e.y - r - 14, w, h, e.hp / e.hpMax, CFG.col.hpFill, CFG.col.hpTrack);
+  }
+}
+
+/* 미믹 — 이빨 달린 나무 보물상자. 눈 하나가 뚜껑에 붙어 있다 */
+function drawMimicBody(r, e){
+  const w = r * 1.75, h = r * 1.45;
+  ctx.fillStyle = 'rgba(20,26,16,0.22)';
+  ctx.beginPath(); ctx.ellipse(0, h * 0.62, w * 0.5, r * 0.18, 0, 0, TAU); ctx.fill();
+
+  // 몸통
+  ctx.strokeStyle = '#3a2412'; ctx.lineWidth = Math.max(1.6, r * 0.12);
+  ctx.fillStyle = '#a9743c';
+  rr(-w / 2, -h * 0.12, w, h * 0.74, r * 0.16); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(58,36,18,0.55)'; ctx.lineWidth = Math.max(1, r * 0.06);
+  ctx.beginPath(); ctx.moveTo(-w * 0.16, -h * 0.1); ctx.lineTo(-w * 0.16, h * 0.6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo( w * 0.16, -h * 0.1); ctx.lineTo( w * 0.16, h * 0.6); ctx.stroke();
+
+  // 벌린 입 안쪽
+  ctx.fillStyle = '#2a1408';
+  rr(-w * 0.44, -h * 0.26, w * 0.88, h * 0.3, r * 0.1); ctx.fill();
+
+  // 아래 이빨
+  ctx.fillStyle = '#f6f2e6';
+  for (let i = 0; i < 4; i++){
+    const tx = -w * 0.36 + i * (w * 0.24);
+    ctx.beginPath();
+    ctx.moveTo(tx, -h * 0.02); ctx.lineTo(tx + w * 0.1, -h * 0.02); ctx.lineTo(tx + w * 0.05, -h * 0.22);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // 열린 뚜껑
+  ctx.save();
+  ctx.translate(-w * 0.5, -h * 0.2);                    // 몸통 왼쪽 위 모서리가 경첩
+  ctx.rotate(-0.42 + Math.sin(e.wob * 3) * 0.05);
+  ctx.strokeStyle = '#3a2412'; ctx.lineWidth = Math.max(1.6, r * 0.12);
+  ctx.fillStyle = '#8f5f2e';
+  rr(0, -h * 0.44, w, h * 0.5, r * 0.14); ctx.fill(); ctx.stroke();
+  // 윗 이빨
+  ctx.fillStyle = '#f6f2e6';
+  for (let i = 0; i < 4; i++){
+    const tx = w * 0.08 + i * (w * 0.24);
+    ctx.beginPath();
+    ctx.moveTo(tx, h * 0.04); ctx.lineTo(tx + w * 0.1, h * 0.04); ctx.lineTo(tx + w * 0.05, h * 0.24);
+    ctx.closePath(); ctx.fill();
+  }
+  // 눈
+  ctx.fillStyle = '#f6f2e6';
+  ctx.beginPath(); ctx.arc(w * 0.2, -h * 0.2, r * 0.24, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#15190f';
+  ctx.beginPath(); ctx.arc(w * 0.22, -h * 0.2, r * 0.11, 0, TAU); ctx.fill();
+  ctx.restore();
+
+  if (e.flash > 0){
+    ctx.globalAlpha = clamp(e.flash * 3.5, 0, 0.5);
+    ctx.fillStyle = '#fff';
+    rr(-w / 2, -h * 0.6, w, h * 1.2, r * 0.16); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawBullet(b){
+  const M = CFG.missile[b.w], W = CFG.weapons[b.w];
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.a);
+
+  // 꼬리 — fast 는 길고 얇게, strong 은 굵고 짧게
+  const g = ctx.createLinearGradient(0, 0, -M.tail, 0);
+  g.addColorStop(0, W.col);
+  g.addColorStop(0.55, b.w === 'fast' ? 'rgba(127,224,255,0.45)' : 'rgba(232,69,42,0.5)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(0, -M.tailW / 2);
+  ctx.lineTo(-M.tail, 0);
+  ctx.lineTo(0, M.tailW / 2);
+  ctx.closePath(); ctx.fill();
+
+  if (M.shape === 'diamond'){
+    ctx.fillStyle = W.col2;
+    ctx.beginPath();
+    ctx.moveTo(b.r * 1.9, 0); ctx.lineTo(0, -b.r); ctx.lineTo(-b.r * 1.1, 0); ctx.lineTo(0, b.r);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = W.col;
+    ctx.beginPath();
+    ctx.moveTo(b.r * 1.2, 0); ctx.lineTo(0, -b.r * 0.6); ctx.lineTo(-b.r * 0.6, 0); ctx.lineTo(0, b.r * 0.6);
+    ctx.closePath(); ctx.fill();
+  } else if (M.shape === 'ice'){
+    ctx.fillStyle = W.col2;                       // 대
+    ctx.fillRect(-b.r * 1.6, -b.r * 0.2, b.r * 2.6, b.r * 0.4);
+    ctx.fillStyle = W.col;                        // 얼음 촉
+    ctx.beginPath();
+    ctx.moveTo(b.r * 2.1, 0); ctx.lineTo(b.r * 0.5, -b.r * 0.95);
+    ctx.lineTo(b.r * 0.9, 0); ctx.lineTo(b.r * 0.5, b.r * 0.95);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#eafaff';
+    ctx.beginPath(); ctx.arc(b.r * 1.1, 0, b.r * 0.32, 0, TAU); ctx.fill();
+  } else if (M.shape === 'arrow'){
+    ctx.fillStyle = W.col2;                       // 대
+    ctx.fillRect(-b.r * 1.7, -b.r * 0.22, b.r * 2.8, b.r * 0.44);
+    ctx.fillStyle = W.col;                        // 촉
+    ctx.beginPath();
+    ctx.moveTo(b.r * 2.0, 0); ctx.lineTo(b.r * 0.6, -b.r * 0.85); ctx.lineTo(b.r * 0.6, b.r * 0.85);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();                              // 깃
+    ctx.moveTo(-b.r * 1.8, 0); ctx.lineTo(-b.r * 0.7, -b.r * 0.8);
+    ctx.lineTo(-b.r * 0.3, 0);  ctx.lineTo(-b.r * 0.7, b.r * 0.8);
+    ctx.closePath(); ctx.fill();
+  } else {
+    ctx.rotate(Math.PI / 2);            // 불꽃 아이콘은 위쪽이 진행 방향
+    const s = b.r * 1.15 * (1 + 0.12 * Math.sin(G.t * 22 + b.ph));
+    const rg = ctx.createRadialGradient(0, 0, 0.5, 0, 0, s * 1.6);
+    rg.addColorStop(0, '#fff6cf'); rg.addColorStop(0.5, W.col); rg.addColorStop(1, W.col2);
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.moveTo(0, -s * 1.7);
+    ctx.bezierCurveTo(s * 1.15, -s * 0.3, s, s * 1.05, 0, s * 1.1);
+    ctx.bezierCurveTo(-s, s * 1.05, -s * 1.15, -s * 0.3, 0, -s * 1.7);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+
+  // 반짝임 잔상 (물결탄만)
+  if (M.spark){
+    for (let i = 0; i < b.trail.length; i += 2){
+      const k = i / Math.max(2, b.trail.length - 2);
+      ctx.globalAlpha = k * 0.7;
+      ctx.fillStyle = '#eaffff';
+      const sz = 1 + k * 1.6;
+      ctx.fillRect(b.trail[i] - sz / 2 + Math.sin(i + G.t * 9) * 3,
+                   b.trail[i + 1] - sz / 2 + Math.cos(i * 1.7 + G.t * 9) * 3, sz, sz);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawParts(){
+  // 폭발 반경 표시
+  for (const g of G.rings){
+    const k = 1 - g.t / g.life;
+    ctx.globalAlpha = (1 - k) * 0.7;
+    ctx.strokeStyle = g.c; ctx.lineWidth = 3 * (1 - k) + 1;
+    ctx.beginPath(); ctx.arc(g.x, g.y, g.r * (0.35 + 0.75 * k), 0, TAU); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const p of G.parts){
+    ctx.globalAlpha = clamp(p.t / p.life, 0, 1);
+    ctx.fillStyle = p.c;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHud(){
+  const r = G.run, b = G.b;
+
+  // 웨이브 N/M
+  const lw = 96, lx = (L.w - lw) / 2, ly = L.waveY;
+  ctx.fillStyle = CFG.col.hudLabel; rr(lx, ly, lw, 22, 5); ctx.fill();
+  const wlabel = onBossWave()
+    ? '보스  ' + r.wave + '/' + waveTotal(r.stage)      // 마지막 웨이브는 보스 차지다
+    : '웨이브 ' + r.wave + '/' + waveTotal(r.stage);
+  txt(wlabel, L.w / 2, ly + 11, 12, onBossWave() ? '#ffdf6b' : '#fff', 'center');
+
+  // 판 번호 + 웨이브 제한 시간 (구현된 규칙을 눈으로 확인하기 위한 표시)
+  txt('판 ' + r.stage + (isBoss(r.stage) ? ' ★' : ''), L.w / 2, ly + 32, 11, '#e8eee2', 'center');
+  if (b.phase === 'wave'){
+    bar(lx, ly + 40, lw, 3, clamp(b.waveT / CFG.wave.limit, 0, 1), '#f2efe4', 'rgba(0,0,0,0.28)');
+  }
+
+  // 좌상단 톱니 = 홈으로 (런은 유지된다)
+  const gx = 26, gy = L.waveY + 12;
+  ctx.fillStyle = '#f2efe4';
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++){
+    const a = i * TAU / 8;
+    ctx.lineTo(Math.cos(a) * 13 + gx, Math.sin(a) * 13 + gy);
+    ctx.lineTo(Math.cos(a + 0.28) * 9 + gx, Math.sin(a + 0.28) * 9 + gy);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = CFG.col.field;
+  ctx.beginPath(); ctx.arc(gx, gy, 4.6, 0, TAU); ctx.fill();
+  HIT.push({ x:gx - 20, y:gy - 20, w:40, h:40, fn:function(){ G.b.menu = 'main'; } });
+}
+
+/* 전투 중 설정 — 계속하기 / 진동 / 포기하기 */
+function drawMenu(){
+  const b = G.b;
+  HIT = [];                        // 뒤에 그린 전투 화면 버튼은 살려두지 않는다
+  ctx.fillStyle = 'rgba(4,7,14,0.82)';
+  ctx.fillRect(0, 0, L.w, L.h);
+
+  const bw = Math.min(230, L.w - 60), bx = (L.w - bw) / 2;
+  let y = L.h * 0.30;
+
+  if (b.menu === 'confirmQuit'){
+    txtOut('이 판을 포기할까요?', L.w / 2, y, 20, '#fff', 'center', 5);
+    txt('처음 웨이브부터 다시 하게 되고', L.w / 2, y + 30, 12, '#a8b6c8', 'center');
+    txt('주사위도 처음 상태로 돌아갑니다', L.w / 2, y + 48, 12, '#a8b6c8', 'center');
+    txt('이미 깎인 성벽은 회복되지 않습니다', L.w / 2, y + 66, 12, '#ff9f9f', 'center');
+    y += 100;
+    button(bx, y, bw, 50, '포기하고 로비로', function(){ quitStage(); }, '#c1443a');
+    y += 62;
+    button(bx, y, bw, 44, '아니오', function(){ G.b.menu = 'main'; }, '#4a5568', 15);
+    return;
+  }
+
+  txtOut('설정', L.w / 2, y, 22, '#fff', 'center', 5);
+  y += 44;
+  button(bx, y, bw, 50, '계속하기', function(){ G.b.menu = null; }, '#3ac13a');
+  y += 62;
+  button(bx, y, bw, 44, '진동  ' + (G.meta.vibrate ? '켜짐' : '꺼짐'),
+         function(){ G.meta.vibrate = !G.meta.vibrate; save(); }, '#4a5568', 15);
+  y += 56;
+  button(bx, y, bw, 44, '포기하기', function(){ G.b.menu = 'confirmQuit'; }, '#8b3a32', 15);
+  y += 56;
+  if (!navigator.vibrate){
+    txt('이 브라우저는 진동을 지원하지 않습니다', L.w / 2, y, 10, '#8fa2c0', 'center');
+  }
+}
+
+/* 판 포기 — 로비로 나가고 그 판을 처음부터 다시 하게 된다 */
+function quitStage(){
+  const r = G.run;
+  r.wave = 1;
+  resetHeroes(r);
+  r.wallHp = CFG.wall.hp;    // 판을 처음부터 다시 하므로 성벽도 원복
+  save();
+  layout();
+  G.screen = 'main';
+}
+
+function drawDeck(){
+  const r = G.run;
+
+  // 슬롯 3칸. 가운데 마법사, 오른쪽 궁수, 나머지는 빈 칸 [관찰]
+  for (let i = 0; i < 3; i++){
+    if (i === 1) continue;
+    if (i === 2 && r.heroes.archer) continue;
+    ctx.fillStyle = 'rgba(0,0,0,0.06)';
+    rr(L.slotX[i], L.cardY, L.cardW, L.cardH, 9); ctx.fill();
+  }
+
+  for (const hid of liveHeroes()){
+    const h = r.heroes[hid], d = G.b.dice[hid];
+    const x = L.cardX[hid], y = L.cardY;
+    const H = CFG.heroes[hid];
+
+    heroPortrait(hid, x, y, L.cardW, L.cardH);          // 슬롯 안에는 영웅 얼굴
+
+    const air = d.spinT > 0;
+    // 굴림 대기 막대 — 다 차면 초록 [관찰]
+    const p = 1 - clamp(d.rollT / rollInterval(hid), 0, 1);
+    bar(x + 2, L.pillY, L.cardW - 4, L.barH, air ? 1 : p,
+        air ? '#5ce03f' : CFG.col.xpFill, '#4a4a42');
+
+    // 이 영웅의 경험치 막대 — 영웅 바로 아래에 둔다
+    const need = xpNeed(h.level);
+    bar(x + 2, L.xpBarY, L.cardW - 4, L.barH, h.xp / need, H.xp, CFG.col.xpTrack);
+    txt('Lv' + h.level + '  ' + h.xp + '/' + need, x + L.cardW / 2, L.lvY, 10,
+        '#454b52', 'center');
+
+    // 정육면체 주사위 — 슬롯에서 튀어올라 굴러 착지한다
+    const C   = CFG.cube;
+    const arc = air ? Math.sin(Math.PI * clamp(1 - d.spinT / d.spinDur, 0, 1)) : 0;
+    const ccx = x + L.cardW / 2;
+    const ccy = y + L.cardH / 2 - C.jump * arc + C.kickPx * d.kick;   // 발사 반동으로 살짝 눌린다
+    ctx.fillStyle = 'rgba(0,0,0,' + (0.24 * (1 - arc * 0.8)).toFixed(3) + ')';
+    ctx.beginPath();
+    ctx.ellipse(ccx, y + L.cardH - 1, C.side * 0.42 * (1 - arc * 0.35), C.side * 0.1, 0, 0, TAU);
+    ctx.fill();
+    drawCube(ccx, ccy, C.side * (1 + C.grow * arc), h.faces, d.ax, d.ay, [H.tile, H.tile2]);
+  }
+}
+
+function drawBattle(){
+  const b = G.b;
+  ctx.save();
+  drawField();
+  for (const e of G.enemies) drawEnemy(e);
+  for (const m of G.bullets) drawBullet(m);
+  drawParts();
+  drawWall();
+  ctx.restore();
+
+  drawDeck();
+  drawHud();
+  if (b.menu){ drawMenu(); return; }
+
+  if (b.phase === 'bosswarn'){
+    const on = (b.warnLeft % 2) === 1 || b.warnT > CFG.boss.warnGap * 0.5;
+    if (on){
+      ctx.fillStyle = 'rgba(210,40,40,0.30)';
+      ctx.fillRect(0, 0, L.w, L.wallY);
+      txtOut('보스 접근', L.w / 2, L.wallY * 0.45, 34, '#ffdf6b', 'center', 7);
+    }
+  }
+  if (b.phase === 'boss' && b.boss && !b.boss.dead){
+    const w = L.w - 60;
+    txt(isBoss(G.run.stage) && G.run.stage === CFG.stage.perWorld ? '최종 보스' : '보스',
+        L.w / 2, L.hud + 6, 12, '#ffdf6b', 'center');
+    bar(30, L.hud + 16, w, 10, b.boss.hp / b.boss.hpMax, CFG.col.hpFill, CFG.col.hpTrack);
+  }
+}
+
+
+/* ============================================================================
+   그리기 — 레벨업 3택
+   ========================================================================== */
+function drawLevelUp(){
+  drawBattle();
+  HIT = [];                            // 배경으로 그린 전투 화면의 버튼은 살려두지 않는다
+  ctx.fillStyle = 'rgba(10,14,8,0.72)';
+  ctx.fillRect(0, 0, L.w, L.h);
+
+  // 리본 배너 — 어느 영웅의 레벨업인지 색으로 구분한다(마법사 파랑 / 궁수 초록)
+  const HH = CFG.heroes[(G.b && G.b.lvHero) || 'mage'];
+  const by = L.h * 0.20, bw = L.w - 56, bx = 28;
+  ctx.fillStyle = HH.card;
+  ctx.beginPath();
+  ctx.moveTo(bx, by); ctx.lineTo(bx + bw, by);
+  ctx.lineTo(bx + bw, by + 44); ctx.lineTo(bx, by + 44);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.fillRect(bx, by + 4, bw, 14);
+  txtOut('업그레이드 선택', L.w / 2, by + 22, 21, '#fff', 'center', 5);
+  // 어느 영웅의 레벨업인지 — 영웅이 둘이면 반드시 필요하다
+  if (G.b && G.b.lvHero){
+    txtOut(HH.name + ' 레벨 업', L.w / 2, by + 58, 15, HH.cardTop, 'center', 4);
+  }
+
+  const cards = (G.b && G.b.cards) || [];
+  const n = Math.max(1, cards.length);
+  const gap = 8, cw = Math.min(104, (L.w - 32 - gap * (n - 1)) / n), chh = 176;
+  const x0 = (L.w - (cw * n + gap * (n - 1))) / 2, y0 = by + 74;
+  for (let i = 0; i < cards.length; i++) drawUpCard(x0 + i * (cw + gap), y0, cw, chh, cards[i]);
+}
+
+function drawUpCard(x, y, w, h, c){
+  const H = CFG.heroes[cardHero()];
+  ctx.fillStyle = H.card; rr(x, y, w, h, 10); ctx.fill();
+  ctx.fillStyle = H.cardTop;
+  ctx.save(); rr(x, y, w, h, 10); ctx.clip();
+  ctx.fillRect(x, y, w, 46);
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 2; rr(x, y, w, h, 10); ctx.stroke();
+
+  txtOut(c.name, x + w / 2, y + 16, 14, '#fff', 'center', 3);
+  star(x + w / 2, y + 34, 6);
+
+  if (c.hero){
+    // 영웅 배치 카드 — 그 영웅 얼굴을 보여준다
+    heroPortrait(c.hero, x + (w - 48) / 2, y + 58, 48, 48);
+    txtOut('NEW', x + w / 2, y + 118, 15, '#57ef4a', 'center', 3);
+  } else if (c.targets.length){
+    // 대상 면의 현재값 타일 + 초록 증가분 (레벨업한 영웅의 면)
+    const hh = G.run.heroes[cardHero()];
+    const n = c.targets.length;
+    const tw = n === 1 ? 46 : (n === 2 ? 38 : 28), tgap = 4;
+    const tx0 = x + (w - (tw * n + tgap * (n - 1))) / 2, ty = y + 62;
+    for (let i = 0; i < n; i++){
+      const f = hh.faces[c.targets[i]];
+      faceTile(tx0 + i * (tw + tgap), ty, tw, tw, f, { pal:[H.tile, H.tile2] });
+      txtOut('+' + c.add, tx0 + i * (tw + tgap) + tw / 2, ty + tw + 12,
+             n === 3 ? 13 : 16, '#57ef4a', 'center', 3);
+    }
+  } else {
+    hourglass(x + w / 2, y + 92, 24);
+  }
+
+  txt(c.foot, x + w / 2, y + h - 16, c.foot.length > 6 ? 9 : 11, '#f0f6ff', 'center');
+  if (!c.noTap){
+    HIT.push({ x:x, y:y, w:w, h:h, fn:(function(cc){ return function(){ takeCard(cc); }; })(c) });
+  }
+}
+
+/* 미믹 보상 화면 — 카드 하나와 확인 버튼 */
+function drawMimicReward(){
+  drawBattle();
+  HIT = [];
+  ctx.fillStyle = 'rgba(10,14,8,0.78)';
+  ctx.fillRect(0, 0, L.w, L.h);
+
+  const H = CFG.heroes[cardHero()];
+  const by = L.h * 0.18, bw = L.w - 56, bx = 28;
+  ctx.fillStyle = '#8b5a2b';
+  ctx.fillRect(bx, by, bw, 44);
+  ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(bx, by + 4, bw, 14);
+  txtOut('미믹 보상', L.w / 2, by + 22, 21, '#ffe6a8', 'center', 5);
+  txtOut(H.name + ' 강화', L.w / 2, by + 58, 15, H.cardTop, 'center', 4);
+
+  const c = G.b.mimicCard;
+  if (c){
+    c.noTap = true;                       // 카드는 눌러도 적용되지 않는다(확인 버튼으로만)
+    const cw = 116, chh = 176;
+    drawUpCard((L.w - cw) / 2, by + 74, cw, chh, c);
+  }
+  const bwB = Math.min(200, L.w - 80);
+  button((L.w - bwB) / 2, by + 74 + 176 + 22, bwB, 50, '확인', function(){ takeMimicCard(); }, '#3ac13a');
+}
+
+function star(x, y, s){
+  ctx.fillStyle = '#ffd54a';
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++){
+    const a = -Math.PI / 2 + i * Math.PI / 5, rr2 = (i % 2 ? s * 0.45 : s);
+    ctx.lineTo(x + Math.cos(a) * rr2, y + Math.sin(a) * rr2);
+  }
+  ctx.closePath(); ctx.fill();
+}
+
+function hourglass(x, y, s){
+  ctx.strokeStyle = '#eaf2ff'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.6, y - s); ctx.lineTo(x + s * 0.6, y - s);
+  ctx.lineTo(x, y); ctx.lineTo(x + s * 0.6, y + s);
+  ctx.lineTo(x - s * 0.6, y + s); ctx.lineTo(x, y);
+  ctx.closePath(); ctx.stroke();
+  ctx.fillStyle = '#fdf3c4';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.5, y + s * 0.9); ctx.lineTo(x + s * 0.5, y + s * 0.9);
+  ctx.lineTo(x, y + s * 0.1);
+  ctx.closePath(); ctx.fill();
+}
+
+
+/* ============================================================================
+   그리기 — 승리 보상 (1단계 전리품, 2단계 상자)
+   ========================================================================== */
+function drawReward(){
+  const b = G.b;
+  ctx.fillStyle = CFG.col.field; ctx.fillRect(0, 0, L.w, L.h);
+  ctx.fillStyle = CFG.col.field2;
+  for (let y = 40; y < L.h; y += 96) ctx.fillRect(0, y, L.w, 34);
+
+  // 상자를 연 다음은 카드팩 차례다. 화면을 통째로 쓰므로 여기서 갈라진다
+  if (b.rewardPhase >= 4 && b.pack){ drawPack(b); return; }
+
+  txtOut(G.run.stage >= CFG.stage.perWorld ? '월드 1 완료' : '전투 승리',
+         L.w / 2, L.h * 0.17, 38, '#fff', 'center', 8);
+
+  if (b.rewardPhase === 1){
+    for (const p of G.loot){
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      icoCur(p.kind, 0, 0, 13 * p.sc);
+      ctx.restore();
+    }
+    drawRewardRow(L.h * 0.66);
+    txtOut('탭하여 계속', L.w / 2, L.h * 0.80, 14, '#f0f4ea', 'center', 3);
+  } else {
+    drawRewardRow(L.h * 0.32);
+    drawChest(L.h * 0.58);
+  }
+}
+
+function drawRewardRow(y){
+  const R = CFG.reward, rw = R.order.length;
+  const cell = 52, gap = 3, w = cell * rw + gap * (rw - 1) + 12;
+  const x = (L.w - w) / 2;
+
+  ctx.fillStyle = CFG.col.hudLabel; rr(L.w / 2 - 30, y - 26, 60, 20, 5); ctx.fill();
+  txt('보상', L.w / 2, y - 16, 12, '#fff', 'center');
+
+  ctx.fillStyle = '#cfd4ca'; rr(x, y, w, cell + 12, 9); ctx.fill();
+  ctx.strokeStyle = '#8f978c'; ctx.lineWidth = 2; rr(x, y, w, cell + 12, 9); ctx.stroke();
+
+  for (let i = 0; i < rw; i++){
+    const k = R.order[i], cxx = x + 6 + i * (cell + gap);
+    ctx.fillStyle = '#b7bdb2'; rr(cxx, y + 6, cell, cell, 6); ctx.fill();
+    icoCur(k, cxx + cell / 2, y + 6 + cell * 0.38, 20);
+    txtOut(String(G.b.reward[k]), cxx + cell / 2, y + 6 + cell * 0.80, 17, '#fff', 'center', 4);
+  }
+}
+
+function drawChest(y){
+  const b = G.b, w = 92, x = (L.w - w) / 2, open = b.rewardPhase === 3;
+
+  ctx.fillStyle = '#8a5a2b'; rr(x, y, w, 58, 6); ctx.fill();
+  ctx.fillStyle = '#a86f35'; rr(x + 5, y + 5, w - 10, 48, 4); ctx.fill();
+  ctx.fillStyle = CFG.col.gold; ctx.fillRect(x + w / 2 - 7, y + 16, 14, 20);
+
+  ctx.save();
+  ctx.translate(x, y);
+  if (open) ctx.rotate(-0.5);
+  ctx.fillStyle = '#7a4d24';
+  ctx.beginPath();
+  ctx.moveTo(0, 4);
+  ctx.quadraticCurveTo(w / 2, -24, w, 4);
+  ctx.lineTo(w, 12); ctx.lineTo(0, 12);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  if (open){
+    for (let i = 0; i < 9; i++){
+      const a = -Math.PI / 2 + (i - 4) * 0.28, d = 34 + (i % 3) * 12;
+      icoCur(CFG.reward.order[i % 5], x + w / 2 + Math.cos(a) * d, y + Math.sin(a) * d, 13);
+    }
+    txtOut('상자 열림 · 탭하여 다음 판', L.w / 2, y + 92, 14, '#fff', 'center', 3);
+  } else {
+    bar(x - 14, y + 74, w + 28, 14, b.chest, CFG.col.gold, '#4a4a42');
+    txtOut(Math.round(b.chest * 100) + '%', L.w / 2, y + 81, 11, '#fff', 'center', 3);
+  }
+}
+
+
+/* ============================================================================
+   카드팩 — 판을 하나 끝내면 재화와 함께 카드 한 장이 나온다.
+   뒷면 세 장을 펼치고 그중 하나를 고른다.
+   ========================================================================== */
+/* 카드 뒷면 */
+function packBack(x, y, w, h, i){
+  ctx.fillStyle = '#3b2a6b'; rr(x, y, w, h, 10); ctx.fill();
+  ctx.fillStyle = '#543d97'; rr(x + 5, y + 5, w - 10, h - 10, 7); ctx.fill();
+  ctx.strokeStyle = '#ffd75e'; ctx.lineWidth = 2; rr(x + 5, y + 5, w - 10, h - 10, 7); ctx.stroke();
+  // 가운데 별 하나 + 위아래로 작은 별. 카드마다 반짝임이 어긋나게 i 를 섞는다
+  const cx = x + w / 2, cy = y + h / 2;
+  ctx.globalAlpha = 0.55 + 0.35 * Math.sin(G.t * 3 + i * 1.7);
+  star(cx, cy, Math.min(w, h) * 0.20);
+  ctx.globalAlpha = 0.35;
+  star(cx, cy - h * 0.28, Math.min(w, h) * 0.07);
+  star(cx, cy + h * 0.28, Math.min(w, h) * 0.07);
+  ctx.globalAlpha = 1;
+}
+
+/* 재화 카드 — 스킬이 아직 부족해서 빈 자리를 채우는 임시 카드 */
+function packCurCard(x, y, w, h, c){
+  ctx.fillStyle = '#8a5a2b'; rr(x, y, w, h, 10); ctx.fill();
+  ctx.save(); rr(x, y, w, h, 10); ctx.clip();
+  ctx.fillStyle = '#a86f35'; ctx.fillRect(x, y, w, Math.max(15, Math.round(h * 0.24)));
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 2; rr(x, y, w, h, 10); ctx.stroke();
+  txtOut('재화', x + w / 2, y + Math.max(15, Math.round(h * 0.24)) / 2 + 1, 14, '#fff', 'center', 3);
+  icoCur(c.k, x + w / 2, y + h * 0.48, Math.max(12, Math.round(h * 0.15)));
+  txtOut('+' + c.n, x + w / 2, y + h * 0.74, Math.max(16, Math.round(h * 0.14)), '#ffd75e', 'center', 4);
+}
+
+function packFront(x, y, w, h, c){
+  if (c.kind === 'skill') skillCard(x, y, w, h, c.sk, { big:true });
+  else packCurCard(x, y, w, h, c);
+}
+
+function drawPack(b){
+  const pk = b.pack, done = pk.picked >= 0;
+  const t = clamp(pk.flipT / CFG.skills.packFlip, 0, 1);
+
+  txtOut('카드팩', L.w / 2, L.h * 0.12, 30, '#ffe6a8', 'center', 7);
+
+  if (!done){
+    txt('한 장을 고르세요', L.w / 2, L.h * 0.12 + 26, 13, '#f0f4ea', 'center');
+
+    const n = pk.cards.length, gap = 10;
+    const cw  = Math.min(102, Math.floor((L.w - 36 - gap * (n - 1)) / n));
+    const chh = Math.round(cw * 1.42);
+    const x0  = Math.round((L.w - (cw * n + gap * (n - 1))) / 2);
+    const y   = Math.round(L.h * 0.28);
+
+    for (let i = 0; i < n; i++){
+      const x = x0 + i * (cw + gap);
+      // 살짝 떠 있는 느낌만 준다. 눌러야 할 곳이 흔들리면 안 되므로 판정은 고정 위치로
+      packBack(x, y + Math.sin(G.t * 2.2 + i * 1.1) * 3, cw, chh, i);
+      HIT.push({ x:x, y:y, w:cw, h:chh, fn:(function(k){
+        return function(){ takePackCard(k); };
+      })(i) });
+    }
+    txt('고른 카드는 주문서 탭에 모입니다', L.w / 2, y + chh + 30, 11, '#a8b6c8', 'center');
+    return;
+  }
+
+  // 고른 카드 — 뒤집히며 앞면이 나온다
+  const c  = pk.cards[pk.picked];
+  const bw = Math.min(150, L.w - 90), bh = Math.round(bw * 1.42);
+  const bx = Math.round((L.w - bw) / 2), by = Math.round(L.h * 0.26);
+  const sc = Math.abs(Math.cos(Math.PI * t));            // 1 → 0 → 1 로 좁아졌다 펴진다
+
+  ctx.save();
+  ctx.translate(bx + bw / 2, by + bh / 2);
+  ctx.scale(Math.max(0.02, sc), 1);
+  ctx.translate(-(bx + bw / 2), -(by + bh / 2));
+  if (t < 0.5) packBack(bx, by, bw, bh, pk.picked);
+  else         packFront(bx, by, bw, bh, c);
+  ctx.restore();
+
+  if (t < 1) return;                                     // 다 뒤집힌 뒤에 문구를 낸다
+
+  let ty = by + bh + 26;
+  if (c.kind === 'skill'){
+    txtOut(c.sk.name + '  Lv' + (c.lvAfter || 1) + ' 획득',
+           L.w / 2, ty, 17, '#ffd75e', 'center', 4); ty += 22;
+    txt(skillEffectText(c.sk), L.w / 2, ty, 11, '#9ff0a6', 'center'); ty += 20;
+  } else {
+    txtOut('재화 +' + c.n, L.w / 2, ty, 17, '#ffd75e', 'center', 4); ty += 22;
+  }
+  txtOut('탭하여 다음 판', L.w / 2, ty + 8, 14, '#fff', 'center', 3);
+}
+
+
+/* ============================================================================
+   그리기 — 메인 / 게임오버
+   ========================================================================== */
+/* ============================================================================
+   홈 화면 — 판을 하나 끝내면 여기로 나온다
+   ========================================================================== */
+/* 로비 계열 화면의 공통 배경 + 상단 재화 띠 */
+function homeChrome(){
+  ctx.fillStyle = CFG.col.homeBg; ctx.fillRect(0, 0, L.w, L.h);
+  ctx.fillStyle = CFG.col.homeBg2;
+  for (let y = 0; y < L.h; y += 46){
+    for (let x = ((y / 46) % 2) * 23; x < L.w; x += 46) ctx.fillRect(x, y, 23, 23);
+  }
+  const topH = 40;
+  ctx.fillStyle = CFG.col.homeBar; ctx.fillRect(0, 0, L.w, topH);
+  const R = CFG.reward, pw = 66, pgap = 3;
+  let px = L.w - 6 - (pw * R.order.length + pgap * (R.order.length - 1));
+  for (const k of R.order){
+    ctx.fillStyle = '#12161c'; rr(px, 9, pw, 22, 11); ctx.fill();
+    icoCur(k, px + 12, 20, 15);
+    txt(String(G.meta.cur[k]), px + pw - 7, 20, 12, '#fff', 'right');
+    px += pw + pgap;
+  }
+  return topH;
+}
+
+/* 리본 배너 */
+function ribbon(y, text, col, size){
+  const bw = L.w - 76, bx = 38;
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(bx, y); ctx.lineTo(bx + bw, y);
+  ctx.lineTo(bx + bw - 10, y + 20); ctx.lineTo(bx + bw, y + 40);
+  ctx.lineTo(bx, y + 40); ctx.lineTo(bx + 10, y + 20);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(bx + 10, y + 4, bw - 20, 12);
+  txtOut(text, L.w / 2, y + 20, size || 19, '#fff', 'center', 5);
+  return y + 40;
+}
+
+function drawMain(){
+  const r = G.run;
+  homeChrome();
+  const topH = 40;
+
+  // 톱니 = 런 초기화
+  const gx = 26, gy = topH + 24;
+  ctx.fillStyle = '#f2efe4';
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++){
+    const a = i * TAU / 8;
+    ctx.lineTo(Math.cos(a) * 13 + gx, Math.sin(a) * 13 + gy);
+    ctx.lineTo(Math.cos(a + 0.28) * 9 + gx, Math.sin(a + 0.28) * 9 + gy);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = CFG.col.homeBg;
+  ctx.beginPath(); ctx.arc(gx, gy, 4.6, 0, TAU); ctx.fill();
+  txt('초기화', gx, gy + 22, 9, '#8fa2c0', 'center');
+  HIT.push({ x:gx - 20, y:gy - 20, w:40, h:48, fn:function(){
+    G.run = newRun(); save(); layout();
+  } });
+
+  // 지역 이름 리본
+  const by = Math.round(L.h * 0.20);
+  ribbon(by, CFG.region.name, '#3aa03a');
+
+  // 아래에서부터 자리를 잡는다 — 하단 탭에 가려지지 않게
+  const navH = 56;
+  const btH = 56, btW = Math.min(220, L.w - 90), btX = (L.w - btW) / 2;
+  const btY = L.h - navH - 20 - btH;
+  const prH = 38, prW = L.w - 56, prX = 28, prY = btY - 20 - prH;
+
+  // 지역 미리보기 — 이 지역에 나오는 적
+  const pvTop = by + 54;
+  const pvW = Math.max(90, Math.min(190, L.w - 110, prY - 20 - pvTop));
+  const pvX = (L.w - pvW) / 2, pvY = pvTop;
+  ctx.fillStyle = '#2b4a6b'; rr(pvX, pvY, pvW, pvW, 12); ctx.fill();
+  ctx.fillStyle = CFG.col.field; rr(pvX + 3, pvY + 3, pvW - 6, pvW - 14, 10); ctx.fill();
+  ctx.strokeStyle = '#101c2c'; ctx.lineWidth = 2; rr(pvX, pvY, pvW, pvW, 12); ctx.stroke();
+  const px0 = pvX + pvW / 2, py0 = pvY + pvW / 2;
+  previewEnemy(px0 + pvW * 0.10, py0 - pvW * 0.16, pvW * 0.15, true);
+  previewEnemy(px0 - pvW * 0.20, py0 + pvW * 0.02, pvW * 0.10, false);
+  previewEnemy(px0 - pvW * 0.06, py0 + pvW * 0.12, pvW * 0.10, false);
+  previewEnemy(px0 + pvW * 0.16, py0 + pvW * 0.20, pvW * 0.10, false);
+
+  // 판 진행
+  ctx.fillStyle = '#2b4a6b'; rr(prX, prY, prW, prH, 8); ctx.fill();
+  ctx.strokeStyle = '#101c2c'; ctx.lineWidth = 2; rr(prX, prY, prW, prH, 8); ctx.stroke();
+  txt('판 ' + r.stage + '/' + CFG.stage.perWorld, L.w / 2, prY + 11, 12, '#fff', 'center');
+  const segN = CFG.stage.perWorld, sw = (prW - 12) / segN;
+  for (let i = 0; i < segN; i++){
+    const done = i < r.stage - 1, now = i === r.stage - 1;
+    ctx.fillStyle = now ? '#5ce03f' : (done ? CFG.col.gold : '#1b3450');
+    ctx.fillRect(prX + 6 + i * sw, prY + 21, Math.max(1, sw - 1), 11);
+  }
+
+  // 전투 버튼 — 영웅이 아직 없으면 먼저 고르게 한다
+  button(btX, btY, btW, btH, r.wave > 1 ? '전투 (이어서)' : '전투',
+         function(){
+           if (liveHeroes().length) startStage();
+           else G.screen = 'pick';
+         }, '#3ac13a', 24);
+
+  // 안내 문구 — 진행 패널과 버튼 사이 빈 줄에 넣는다
+  let msgY = prY + prH + 12;
+  if (G.meta.bestStage > 0){
+    txt('최고 기록  판 ' + G.meta.bestStage, L.w / 2, msgY, 11, '#8fa2c0', 'center'); msgY += 14;
+  }
+  if (G.worldClear){
+    txt('월드 1을 끝냈습니다. 월드 2는 다음 단계입니다', L.w / 2, msgY, 10, '#ffd166', 'center'); msgY += 14;
+  }
+  if (G.wiped){
+    txt('옛 세이브 구조를 감지해 런을 새로 만들었습니다', L.w / 2, msgY, 10, '#ff9f9f', 'center');
+  }
+
+  drawNav('battle');
+}
+
+/* 하단 탭 5칸. '주문서'·'전투'·'영웅'이 동작한다. 나머지는 아직 없으므로 자물쇠 */
+function drawNav(active){
+  const nh = 56, ny = L.h - nh, cw = L.w / 5;
+  const tabs = [
+    { key:'tower',  name:'성탑' },
+    { key:'spell',  name:'주문서' },
+    { key:'battle', name:'전투' },
+    { key:'heroes', name:'영웅' },
+    { key:'shop',   name:'상점' },
+  ];
+  for (let i = 0; i < tabs.length; i++){
+    const t = tabs[i], x = i * cw, on = t.key === active;
+    const live = t.key === 'battle' || t.key === 'heroes' || t.key === 'spell';
+    ctx.fillStyle = on ? '#f0b429' : (live ? '#a7b1a8' : '#8f9a92');
+    ctx.fillRect(x, ny, cw - 1, nh);
+
+    if (t.key === 'battle'){
+      ctx.strokeStyle = on ? '#e9eef2' : '#5c6660'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x + cw * 0.28, ny + 34); ctx.lineTo(x + cw * 0.72, ny + 12); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + cw * 0.72, ny + 34); ctx.lineTo(x + cw * 0.28, ny + 12); ctx.stroke();
+      ctx.lineCap = 'butt';
+    } else if (t.key === 'spell'){
+      // 펼친 책 — 모아둔 스킬 카드를 보는 곳
+      const bx0 = x + cw / 2, by0 = ny + 22;
+      ctx.fillStyle = on ? '#7a4a12' : '#4a5b52';
+      ctx.beginPath();
+      ctx.moveTo(bx0 - 15, by0 - 9); ctx.lineTo(bx0 - 1, by0 - 5);
+      ctx.lineTo(bx0 - 1, by0 + 11); ctx.lineTo(bx0 - 15, by0 + 7);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(bx0 + 15, by0 - 9); ctx.lineTo(bx0 + 1, by0 - 5);
+      ctx.lineTo(bx0 + 1, by0 + 11); ctx.lineTo(bx0 + 15, by0 + 7);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = on ? '#fff3d0' : '#8f9a92';
+      ctx.fillRect(bx0 - 12, by0 - 5, 10, 2); ctx.fillRect(bx0 + 2, by0 - 5, 10, 2);
+      ctx.fillRect(bx0 - 12, by0 + 1, 10, 2); ctx.fillRect(bx0 + 2, by0 + 1, 10, 2);
+    } else if (t.key === 'heroes'){
+      // 색색 정육면체 세 개 (원본 아이콘)
+      const cx0 = x + cw / 2;
+      const cube = (px, py, s, c1, c2) => {
+        ctx.fillStyle = c1; rr(px - s / 2, py - s / 2, s, s, 3); ctx.fill();
+        ctx.fillStyle = c2; rr(px - s / 2, py, s, s / 2, 3); ctx.fill();
+      };
+      cube(cx0,          ny + 13, 13, '#ffd54a', '#d19b12');
+      cube(cx0 - 8,      ny + 26, 13, '#57c86a', '#2b8f45');
+      cube(cx0 + 8,      ny + 26, 13, '#4db8f0', '#1a7fd4');
+    } else {
+      const lx = x + cw / 2, ly = ny + 24;
+      ctx.strokeStyle = '#5c6660'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(lx, ly - 5, 6, Math.PI, TAU); ctx.stroke();
+      ctx.fillStyle = '#5c6660'; rr(lx - 9, ly - 5, 18, 14, 3); ctx.fill();
+    }
+    txt(t.name, x + cw / 2, ny + 46, on ? 10 : 9,
+        on ? '#4a3608' : (live ? '#33413a' : '#5c6660'), 'center');
+
+    if (live && !on){
+      HIT.push({ x:x, y:ny, w:cw, h:nh, fn:(function(key){
+        // 탭 키가 곧 화면 이름이다('전투'만 홈 화면이라 main 으로 간다)
+        return function(){ G.screen = key === 'battle' ? 'main' : key; };
+      })(t.key) });
+    }
+  }
+}
+
+/* ============================================================================
+   전투 시작 영웅 선택 — 매 판마다 한 명을 고른다.
+   나머지 한 명은 전투 중 3택의 '합류' 카드로 들어온다
+   ========================================================================== */
+function drawPick(){
+  homeChrome();
+  ribbon(56, '판 ' + G.run.stage + ' · 누구로 시작할까요', '#3aa03a', 15);
+
+  const own = CFG.heroOrder;
+  const cw = Math.min(120, (L.w - 60) / own.length), chh = 168, gap = 16;
+  const x0 = (L.w - (cw * own.length + gap * (own.length - 1))) / 2;
+  const y = Math.round(L.h * 0.30);
+
+  for (let i = 0; i < own.length; i++){
+    const hid = own[i], H = CFG.heroes[hid], x = x0 + i * (cw + gap);
+    ctx.fillStyle = '#cfd6dd'; rr(x, y, cw, chh, 10); ctx.fill();
+    heroPortrait(hid, x + 5, y + 5, cw - 10, chh - 62);
+    ctx.fillStyle = H.card; rr(x + 5, y + chh - 54, cw - 10, 24, 5); ctx.fill();
+    txtOut(H.name, x + cw / 2, y + chh - 42, 13, '#fff', 'center', 3);
+    // 6면 구성 미리보기
+    const ws = weaponsOf(hid);
+    for (let k = 0; k < ws.length; k++){
+      icoWeapon(ws[k], x + cw / 2 + (k - (ws.length - 1) / 2) * 30, y + chh - 16, 12);
+    }
+    HIT.push({ x:x, y:y, w:cw, h:chh, fn:(function(h){
+      return function(){ G.run.heroes[h] = newHero(h); startStage(); };
+    })(hid) });
+  }
+
+  txt('나머지 한 명은 전투 중 업그레이드 카드로 합류합니다',
+      L.w / 2, y + chh + 26, 11, '#8fa2c0', 'center');
+  button((L.w - 140) / 2, y + chh + 48, 140, 40, '← 홈으로',
+         function(){ G.screen = 'main'; }, '#4a5568', 14);
+}
+
+
+/* ============================================================================
+   주문서 탭 — 모은 스킬 카드 4x4
+   카드는 판이 끝날 때 나오는 카드팩으로만 늘어난다(여기서 사는 것이 아니다).
+   ========================================================================== */
+
+/* 스킬 아이콘. 지금은 폭발형 하나뿐이라 effect.stat 으로 고른다 */
+function skillIcon(sk, cx, cy, s){
+  const st = sk.effect && sk.effect.stat;
+  if (st === 'splashR'){
+    // 퍼지는 폭발 — 안쪽 불꽃 + 바깥 파문 두 겹
+    ctx.strokeStyle = 'rgba(255,236,180,0.55)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, s, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,236,180,0.30)';
+    ctx.beginPath(); ctx.arc(cx, cy, s * 1.34, 0, TAU); ctx.stroke();
+    const rg = ctx.createRadialGradient(cx, cy, 0.5, cx, cy, s * 0.78);
+    rg.addColorStop(0, '#fff6cf'); rg.addColorStop(0.55, '#ffb03a'); rg.addColorStop(1, '#e8452a');
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    for (let i = 0; i < 12; i++){
+      const a = -Math.PI / 2 + i * TAU / 12, rr2 = (i % 2 ? s * 0.40 : s * 0.78);
+      ctx.lineTo(cx + Math.cos(a) * rr2, cy + Math.sin(a) * rr2);
+    }
+    ctx.closePath(); ctx.fill();
+    return;
+  }
+  star(cx, cy, s * 0.8);
+}
+
+/* 카드 한 장. 주문서 탭(작게)과 카드팩(크게)이 같이 쓴다.
+   sel=선택 테두리, big=이름 아래 설명까지 넣는 큰 카드 */
+function skillCard(x, y, w, h, sk, opt){
+  opt = opt || {};
+  const soon = !!sk.soon;
+  const lv   = soon ? 0 : skillLv(sk.id);
+  const own  = lv > 0;
+  const H    = (!soon && sk.hero && CFG.heroes[sk.hero]) || null;
+
+  // 색 — 얻은 카드만 영웅 색으로 칠한다. 못 얻은 칸은 회색이라 한눈에 갈린다
+  const base = soon ? '#6c766f' : (own ? (H ? H.card    : '#6f52c8') : '#9aa39b');
+  const top  = soon ? '#7e8880' : (own ? (H ? H.cardTop : '#9a82ee') : '#b0b8b1');
+
+  ctx.fillStyle = base; rr(x, y, w, h, 8); ctx.fill();
+  ctx.save(); rr(x, y, w, h, 8); ctx.clip();
+  ctx.fillStyle = top; ctx.fillRect(x, y, w, Math.max(15, Math.round(h * 0.24)));
+  ctx.restore();
+  ctx.strokeStyle = opt.sel ? '#ffd75e' : 'rgba(0,0,0,0.45)';
+  ctx.lineWidth   = opt.sel ? 3 : 2;
+  rr(x, y, w, h, 8); ctx.stroke();
+
+  const headY = y + Math.max(15, Math.round(h * 0.24)) / 2 + 1;
+
+  if (soon){
+    txt('준비 중', x + w / 2, headY, 9, 'rgba(255,255,255,0.75)', 'center');
+    txtOut('?', x + w / 2, y + h * 0.62, Math.round(h * 0.34), 'rgba(255,255,255,0.55)', 'center', 3);
+    return;
+  }
+
+  txtOut(sk.name, x + w / 2, headY, opt.big ? 15 : 10, '#fff', 'center', opt.big ? 3 : 2);
+
+  // 가운데 아이콘 — 못 얻은 카드는 어둡게 깔고 자물쇠를 얹는다
+  const icY = y + h * (opt.big ? 0.46 : 0.50);
+  ctx.globalAlpha = own ? 1 : 0.30;
+  skillIcon(sk, x + w / 2, icY, Math.max(9, h * (opt.big ? 0.15 : 0.17)));
+  ctx.globalAlpha = 1;
+  if (!own){
+    const lx = x + w / 2, ly = icY + 2;
+    ctx.strokeStyle = '#3d443f'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(lx, ly - 5, 5, Math.PI, TAU); ctx.stroke();
+    ctx.fillStyle = '#3d443f'; rr(lx - 8, ly - 5, 16, 12, 3); ctx.fill();
+  }
+
+  if (opt.big && sk.desc){
+    txt(sk.desc, x + w / 2, y + h * 0.72, 10, '#eef4ff', 'center');
+  }
+
+  // 레벨 눈금 — 몇 장 모았는지. 상한(maxLv)만큼 점을 찍는다
+  const n = CFG.skills.maxLv, dr = opt.big ? 4 : 3, dg = opt.big ? 13 : 9;
+  const dx0 = x + w / 2 - (n - 1) * dg / 2, dy = y + h - (opt.big ? 16 : 10);
+  for (let i = 0; i < n; i++){
+    ctx.fillStyle = i < lv ? '#ffd75e' : 'rgba(0,0,0,0.32)';
+    ctx.beginPath(); ctx.arc(dx0 + i * dg, dy, dr, 0, TAU); ctx.fill();
+  }
+}
+
+/* 이 카드가 지금 무엇을 얼마나 바꾸고 있는가 — 설명칸에 쓰는 한 줄.
+   ⚠ 표시용 계산이라 실제 전투는 splashR() 을 쓴다. 형식을 늘릴 때 둘 다 손볼 것 */
+function skillEffectText(sk){
+  const e = sk.effect;
+  if (!e) return '';
+  const lv = skillLv(sk.id);
+  if (e.stat === 'splashR'){
+    const b0 = CFG.missile[e.w].splashR;
+    const now = Math.round(b0 * (1 + e.mulPerLv * lv));
+    const nxt = Math.round(b0 * (1 + e.mulPerLv * (lv + 1)));
+    if (lv <= 0) return '폭발 반경 ' + b0 + ' · 얻으면 ' + nxt;
+    if (lv >= CFG.skills.maxLv) return '폭발 반경 ' + b0 + ' → ' + now + ' (최고 레벨)';
+    return '폭발 반경 ' + b0 + ' → ' + now + ' · 다음 레벨 ' + nxt;
+  }
+  return '';
+}
+
+function drawSpells(){
+  homeChrome();
+  const top = ribbon(56, '주문서', '#6f52c8') + 20;
+
+  const list = CFG.skills.list, cols = CFG.skills.cols, rows = CFG.skills.rows;
+  let have = 0;
+  for (const sk of list) if (!sk.soon && skillLv(sk.id) > 0) have++;
+  txt('모은 카드 ' + have + ' / ' + (cols * rows), L.w / 2, top - 4, 11, '#8fa2c0', 'center');
+
+  // 아래 설명칸과 하단 탭을 먼저 빼놓고, 남는 높이에 4줄을 맞춘다.
+  // 세로가 짧은 폰에서도 4x4 가 통째로 보여야 한다 — 스크롤은 만들지 않는다
+  const pad = 12, gap = 7, detailH = 66, navH = 56;
+  const gy0    = top + 10;                       // 격자가 시작할 수 있는 제일 위
+  const bottom = L.h - navH - 8;                 // 하단 탭 바로 위까지가 쓸 수 있는 끝
+  const availH = bottom - detailH - gy0;
+  const cw  = Math.floor((L.w - pad * 2 - gap * (cols - 1)) / cols);
+  const chh = clamp(Math.floor((availH - gap * (rows - 1)) / rows), 52, Math.round(cw * 1.30));
+  const gx  = Math.round((L.w - (cw * cols + gap * (cols - 1))) / 2);
+  // 칸 크기에 상한이 있어서 세로가 긴 폰에서는 아래가 휑하게 남는다 → 통째로 가운데에 놓는다
+  const gridH  = rows * (chh + gap) - gap;
+  const blockH = gridH + 9 + (detailH - 6);
+  const gy = gy0 + Math.max(0, Math.round((bottom - gy0 - blockH) / 2));
+
+  for (let i = 0; i < cols * rows; i++){
+    const sk = list[i] || { soon:true, id:'empty' + i };
+    const x = gx + (i % cols) * (cw + gap), y = gy + Math.floor(i / cols) * (chh + gap);
+    skillCard(x, y, cw, chh, sk, { sel:G.spellSel === sk.id });
+    if (!sk.soon){
+      HIT.push({ x:x, y:y, w:cw, h:chh, fn:(function(id){
+        return function(){ G.spellSel = (G.spellSel === id) ? null : id; };
+      })(sk.id) });
+    }
+  }
+
+  // 설명칸 — 고른 카드 한 장을 풀어서 보여준다
+  const dy = gy + gridH + 9;
+  // 계측용 — 4x4 + 설명칸이 하단 탭 위에 다 들어갔는지 밖에서 재보려고 남긴다.
+  // (칸 대부분이 '준비 중'이라 판정칸이 없어서, 눌러보는 것만으로는 아래끝을 알 수 없다)
+  G._spellGeo = { gy:gy, cw:cw, chh:chh, gridBottom:gy + gridH,
+                  detailBottom:dy + detailH - 6, navTop:L.h - navH };
+  ctx.fillStyle = 'rgba(10,14,20,0.55)'; rr(pad, dy, L.w - pad * 2, detailH - 6, 8); ctx.fill();
+  const sel = G.spellSel ? skillDef(G.spellSel) : null;
+  if (sel){
+    const lv = skillLv(sel.id);
+    const who = sel.hero ? CFG.heroes[sel.hero].name : '공용';
+    txtOut(sel.name + (lv ? '  Lv' + lv : '  (아직 없음)'), L.w / 2, dy + 16, 13,
+           lv ? '#ffd75e' : '#c3ccd6', 'center', 3);
+    txt(who + ' · ' + (sel.desc || ''), L.w / 2, dy + 34, 10, '#c3ccd6', 'center');
+    txt(skillEffectText(sel), L.w / 2, dy + 50, 10, '#9ff0a6', 'center');
+  } else {
+    txt('카드를 누르면 무엇이 세지는지 보여줍니다', L.w / 2, dy + 22, 11, '#8fa2c0', 'center');
+    txt('카드는 판을 끝낼 때 나오는 카드팩으로 모읍니다', L.w / 2, dy + 40, 10, '#7d8a99', 'center');
+  }
+
+  drawNav('spell');
+}
+
+
+/* ============================================================================
+   영웅 탭 — 보유 영웅과 잠금 예정 목록
+   ========================================================================== */
+function weaponsOf(hid){
+  const set = [], seen = {};
+  for (const f of CFG.heroes[hid].baseFaces){
+    if (!seen[f.w]){ seen[f.w] = 1; set.push(f.w); }
+  }
+  return set;
+}
+/* 무기 다음 레벨 비용 */
+function wcost(w){
+  const W = CFG.weapons[w], lv = G.meta.wlv[w] || 1;
+  return W.cost + W.costStep * (lv - 1);
+}
+/* 전투력 — 기본 6면의 총피해 × 계수. 무기 레벨만 반영되는 영구 수치다 */
+function heroPower(hid){
+  let sum = 0;
+  // 2026-08-18: 주사위 등급이 시작 눈금을 올리므로 전투력도 그걸 반영해야 한다 —
+  //   등급을 올렸는데 숫자가 그대로면 무엇이 세졌는지 알 수가 없다.
+  for (const f of heroStartFaces(hid)) sum += f.c * wdmg(f.w);
+  return Math.round(sum * CFG.power.coef);
+}
+
+function drawHeroes(){
+  homeChrome();
+  let y = ribbon(56, '영웅', '#3f79c8') + 22;
+
+  // 보유 영웅
+  const own = CFG.heroOrder;
+  const cw = 104, chh = 128, gap = 14;
+  const x0 = (L.w - (cw * own.length + gap * (own.length - 1))) / 2;
+  for (let i = 0; i < own.length; i++){
+    const hid = own[i], x = x0 + i * (cw + gap);
+    ctx.fillStyle = '#cfd6dd'; rr(x, y, cw, chh, 9); ctx.fill();
+    heroPortrait(hid, x + 4, y + 4, cw - 8, chh - 40);
+    ctx.fillStyle = '#3f79c8'; rr(x + 4, y + chh - 34, cw - 8, 30, 5); ctx.fill();
+    txtOut(CFG.heroes[hid].name, x + cw / 2, y + chh - 25, 12, '#fff', 'center', 3);
+    // 이 영웅 강화에 쓰는 재화와 보유량
+    const cur = CFG.weapons[weaponsOf(hid)[0]].cur;
+    icoCur(cur, x + cw / 2 - 16, y + chh - 12, 14);
+    txtOut(String(G.meta.cur[cur]), x + cw / 2 + 6, y + chh - 12, 14, '#fff', 'left', 3);
+    HIT.push({ x:x, y:y, w:cw, h:chh, fn:(function(h){
+      return function(){ G.heroView = h; G.screen = 'herodetail'; };
+    })(hid) });
+  }
+  y += chh + 20;
+
+  y = ribbon(y, '잠금 해제 예정', '#4a6b8a', 16) + 16;
+
+  // 잠금 영웅 3열 그리드 — 남는 높이만큼만 그린다
+  const navTop = L.h - 56;
+  const gw = (L.w - 40 - 12) / 3, gh = 92;
+  for (let i = 0; i < CFG.lockedHeroes.length; i++){
+    const col = i % 3, row = Math.floor(i / 3);
+    const gx = 20 + col * (gw + 6), gy = y + row * (gh + 8);
+    if (gy + gh > navTop - 4) break;
+    ctx.fillStyle = '#2b4a6b'; rr(gx, gy, gw, gh, 7); ctx.fill();
+    silhouette(gx + gw / 2, gy + gh * 0.42, gh * 0.5);
+    ctx.fillStyle = 'rgba(10,20,34,0.85)';
+    rr(gx, gy + gh - 24, gw, 24, 5); ctx.fill();
+    txt(CFG.lockedHeroes[i], gx + gw / 2, gy + gh - 12, 8.5, '#cfe0ff', 'center');
+  }
+
+  drawNav('heroes');
+}
+
+/* 잠금 영웅 실루엣 — 후드 쓴 사람 형태 */
+function silhouette(x, y, h){
+  ctx.fillStyle = 'rgba(6,14,26,0.8)';
+  ctx.beginPath();
+  ctx.arc(x, y - h * 0.22, h * 0.24, Math.PI * 0.9, Math.PI * 2.1);
+  ctx.lineTo(x + h * 0.36, y + h * 0.5);
+  ctx.lineTo(x - h * 0.36, y + h * 0.5);
+  ctx.closePath(); ctx.fill();
+}
+
+
+/* ============================================================================
+   영웅 상세 — 6면, 전투력, 무기 레벨업
+   ========================================================================== */
+function drawHeroDetail(){
+  const hid = G.heroView || 'mage';
+  const H = CFG.heroes[hid];
+  homeChrome();
+
+  const ribBottom = ribbon(46, H.name, H.card, 18);
+
+  // 아래에서부터 자리를 잡는다 — 하단 탭과 겹치지 않게
+  const navH = 56;
+  const chh = 146, cardsY = L.h - navH - 10 - chh;
+  // 2026-08-18 (David 지시): 무기 카드 위에 '주사위 등급' 줄을 한 칸 낸다.
+  //   전투력을 그만큼 위로 밀고, 영웅 그림은 남는 높이에 맞춰 알아서 줄어든다(아래 availH).
+  const dieH = 36, dieY = cardsY - 10 - dieH;
+  const powH = 38, powY = dieY - 10 - powH;
+
+  // 영웅 그림 + 좌우 6면. 남는 높이에 맞춰 크기를 줄인다
+  const availH = powY - 10 - (ribBottom + 8);
+  const ts = clamp(Math.floor((availH - 16) / 3), 22, 42);
+  const pw = clamp(Math.min(L.w * 0.32, availH / 1.15), 60, 130);
+  const px = (L.w - pw) / 2, py = ribBottom + 8 + Math.max(0, (availH - pw * 1.15) / 2);
+  heroPortrait(hid, px, py, pw, pw * 1.15);
+
+  // 6면은 '판을 시작할 때의 모습'이다 — 주사위 등급이 이 눈금을 올린다(무기 레벨과는 무관).
+  const bf = heroStartFaces(hid), tgap = 6;
+  const tTop = py + (pw * 1.15 - (ts * 3 + tgap * 2)) / 2;
+  for (let i = 0; i < bf.length; i++){
+    const left = i < 3, k = left ? i : i - 3;
+    const tx = left ? px - ts - 10 : px + pw + 10;
+    faceTile(tx, tTop + k * (ts + tgap), ts, ts, bf[i], { pal:[H.tile, H.tile2] });
+  }
+
+  // 전투력
+  ctx.fillStyle = '#8f9a92'; rr(52, powY, L.w - 104, powH, 7); ctx.fill();
+  ctx.fillStyle = '#ffd54a';
+  ctx.beginPath(); ctx.arc(76, powY + powH / 2, 14, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#e9eef2';
+  ctx.beginPath();
+  ctx.moveTo(76, powY + 7); ctx.lineTo(80, powY + powH / 2); ctx.lineTo(76, powY + powH - 7);
+  ctx.lineTo(72, powY + powH / 2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#a8453a'; rr(94, powY + 6, L.w - 104 - 50, powH - 12, 5); ctx.fill();
+  txtOut(String(heroPower(hid)), 94 + (L.w - 104 - 50) / 2, powY + powH / 2, 18, '#fff', 'center', 4);
+
+  // 주사위 등급 줄
+  diceTierBar(20, dieY, L.w - 40, dieH, hid);
+
+  // 영웅 전환 화살표
+  const other = CFG.heroOrder[(CFG.heroOrder.indexOf(hid) + 1) % CFG.heroOrder.length];
+  if (other !== hid){
+    arrowBtn(24, powY + powH / 2, 'left', other);
+    arrowBtn(L.w - 24, powY + powH / 2, 'right', other);
+  }
+
+  // 무기 카드
+  const ws = weaponsOf(hid), n = ws.length + 1;
+  const cwid = Math.min(104, (L.w - 20 - 6 * (n - 1)) / n);
+  const cx0 = (L.w - (cwid * n + 6 * (n - 1))) / 2;
+  for (let i = 0; i < ws.length; i++) weaponCard(cx0 + i * (cwid + 6), cardsY, cwid, chh, ws[i], H);
+  lockedWeaponCard(cx0 + ws.length * (cwid + 6), cardsY, cwid, chh);
+
+  // 뒤로 — 상단 왼쪽(카드와 겹치지 않는 자리)
+  button(10, 46, 74, 30, '← 뒤로', function(){ G.screen = 'heroes'; }, '#4a5568', 12);
+  drawNav('heroes');
+}
+
+function arrowBtn(x, y, side, target){
+  const d = side === 'left' ? 1 : -1;   // 화살표 꼭짓점이 그 방향을 향하게
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.beginPath();
+  ctx.moveTo(x + 6 * d, y - 12); ctx.lineTo(x - 6 * d, y); ctx.lineTo(x + 6 * d, y + 12);
+  ctx.closePath(); ctx.fill();
+  HIT.push({ x:x - 18, y:y - 20, w:36, h:40, fn:function(){ G.heroView = target; } });
+}
+
+/* ---- 주사위 등급 줄 (영웅 상세) -----------------------------------------
+   2026-08-18 (David 지시): 주사위를 다이아로 영구 강화한다. 영웅마다 따로 오른다.
+   왼쪽에 지금 등급과 시작 눈금, 오른쪽에 '다음 등급 + 비용' 버튼. 최고 등급이면 버튼 대신 안내.
+   ⚠ 여기 비용·등급을 손으로 적지 말 것 — 전부 CFG.diceTiers 한 곳에서 읽는다. */
+function diceTierBar(x, y, w, h, hid){
+  const i = diceTierIdx(hid), T = CFG.diceTiers[i];
+  const nx = CFG.diceTiers[i + 1] || null;
+
+  ctx.fillStyle = '#8f9a92'; rr(x, y, w, h, 7); ctx.fill();
+
+  // 지금 등급 — 작은 주사위 모양에 시작 눈금을 적는다
+  const dx = x + 8, dy = y + (h - 24) / 2;
+  ctx.fillStyle = T.col2; rr(dx, dy, 24, 24, 5); ctx.fill();
+  ctx.fillStyle = T.col;  rr(dx + 2, dy + 2, 20, 20, 4); ctx.fill();
+  txtOut(String(T.base), dx + 12, dy + 12, 13, '#22303c', 'center', 2);
+
+  txtOut(T.name + ' 주사위', dx + 32, y + h / 2 - 6, 12, '#fff', 'left', 3);
+  txt('시작 눈금 ' + T.base, dx + 32, y + h / 2 + 8, 10, '#dfe7ee', 'left');
+
+  if (!nx){
+    txt('최고 등급', x + w - 12, y + h / 2, 11, '#ffd75e', 'right');
+    return;
+  }
+  const cost = nx.cost, have = G.meta.cur.crystal, can = have >= cost;
+  const bw = 118, bx = x + w - bw - 6, by = y + 5, bh = h - 10;
+  ctx.fillStyle = can ? '#3ac13a' : '#b9c2c9'; rr(bx, by, bw, bh, 5); ctx.fill();
+  txtOut(nx.name + ' →', bx + bw / 2, by + 8, 10, '#fff', 'center', 2);
+  icoCur('crystal', bx + bw / 2 - 22, by + bh - 9, 12);
+  txtOut(String(cost), bx + bw / 2 - 2, by + bh - 9, 12, can ? '#fff' : '#e26a5a', 'left', 2);
+  if (can) HIT.push({ x:bx, y:by, w:bw, h:bh, fn:function(){ upgradeDice(hid); } });
+}
+
+/* 주사위 등급업 — 다이아를 쓴다. 다음 판부터 그 눈금으로 시작한다(영구) */
+function upgradeDice(hid){
+  const i = diceTierIdx(hid), nx = CFG.diceTiers[i + 1];
+  if (!nx) return;
+  if (G.meta.cur.crystal < nx.cost) return;
+  G.meta.cur.crystal -= nx.cost;
+  G.meta.dice[hid] = i + 1;
+  save();
+}
+
+function weaponCard(x, y, w, h, wk, H){
+  const W = CFG.weapons[wk], lv = G.meta.wlv[wk] || 1;
+  const cost = wcost(wk), have = G.meta.cur[W.cur], can = have >= cost;
+
+  ctx.fillStyle = '#8f9a92'; rr(x, y, w, h, 8); ctx.fill();
+  ctx.fillStyle = H.card; rr(x + 4, y - 8, w - 8, 22, 5); ctx.fill();
+  txtOut(W.name, x + w / 2, y + 3, 12, '#fff', 'center', 3);
+
+  // 현재 피해 + 아이콘
+  ctx.fillStyle = H.cardTop; rr(x + 5, y + 18, w - 10, h - 74, 6); ctx.fill();
+  txtOut(String(wdmg(wk)), x + w / 2, y + 34, 20, '#fff', 'center', 4);
+  icoWeapon(wk, x + w / 2, y + 62, 17);
+  txt('LVL ' + lv, x + w / 2, y + h - 52, 10, '#fff', 'center');
+
+  // 증가량
+  txtOut('+' + W.dmgPerLv, x + w / 2, y + h - 34, 15, '#57ef4a', 'center', 3);
+
+  // 비용
+  ctx.fillStyle = can ? '#3ac13a' : '#b9c2c9';
+  rr(x + 5, y + h - 24, w - 10, 20, 5); ctx.fill();
+  icoCur(W.cur, x + w / 2 - 14, y + h - 14, 13);
+  txtOut(String(cost), x + w / 2 + 6, y + h - 14, 13, can ? '#fff' : '#e26a5a', 'left', 3);
+
+  if (can){
+    HIT.push({ x:x, y:y, w:w, h:h, fn:(function(k){
+      return function(){ levelWeapon(k); };
+    })(wk) });
+  }
+}
+
+function lockedWeaponCard(x, y, w, h){
+  ctx.fillStyle = '#7d8781'; rr(x, y, w, h, 8); ctx.fill();
+  ctx.fillStyle = '#5f6a64'; rr(x + 4, y - 8, w - 8, 22, 5); ctx.fill();
+  txtOut('특별함', x + w / 2, y + 3, 12, '#d6ddd8', 'center', 3);
+  ctx.fillStyle = '#96a09a'; rr(x + 5, y + 18, w - 10, h - 74, 6); ctx.fill();
+  // 자물쇠
+  const lx = x + w / 2, ly = y + 52;
+  ctx.strokeStyle = '#e9eef2'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(lx, ly - 7, 9, Math.PI, TAU); ctx.stroke();
+  ctx.fillStyle = '#e9eef2'; rr(lx - 13, ly - 7, 26, 20, 4); ctx.fill();
+  ctx.fillStyle = '#7d8781'; ctx.fillRect(lx - 2, ly - 1, 4, 8);
+  txt('준비 중', x + w / 2, y + h - 34, 12, '#e8eee9', 'center');
+}
+
+/* 무기 레벨업 — 재화를 쓴다. 피해가 바로 올라가고 영구히 남는다 */
+function levelWeapon(wk){
+  const W = CFG.weapons[wk], cost = wcost(wk);
+  if (G.meta.cur[W.cur] < cost) return;
+  G.meta.cur[W.cur] -= cost;
+  G.meta.wlv[wk] = (G.meta.wlv[wk] || 1) + 1;
+  save();
+}
+
+/* 홈 미리보기용 작은 적 */
+function previewEnemy(x, y, r, big){
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(20,26,16,0.22)';
+  ctx.beginPath(); ctx.ellipse(0, r * 0.95, r * 0.8, r * 0.22, 0, 0, TAU); ctx.fill();
+  const g = ctx.createLinearGradient(0, -r, 0, r);
+  g.addColorStop(0, '#8fc255'); g.addColorStop(1, '#4e7033');
+  ctx.fillStyle = g; ctx.strokeStyle = CFG.col.enemyLine; ctx.lineWidth = Math.max(1.4, r * 0.14);
+  ctx.beginPath();
+  ctx.moveTo(0, -r * 1.15);
+  ctx.bezierCurveTo(r * 0.95, -r * 0.7, r * 0.95, r * 0.85, 0, r * 0.85);
+  ctx.bezierCurveTo(-r * 0.95, r * 0.85, -r * 0.95, -r * 0.7, 0, -r * 1.15);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#15190f';
+  ctx.beginPath(); ctx.ellipse(-r * 0.28, -r * 0.1, r * 0.13, r * 0.2, 0, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.ellipse( r * 0.28, -r * 0.1, r * 0.13, r * 0.2, 0, 0, TAU); ctx.fill();
+  if (big){
+    ctx.fillStyle = '#15190f';
+    ctx.beginPath(); ctx.ellipse(0, r * 0.3, r * 0.26, r * 0.2, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e2564f';
+    ctx.beginPath(); ctx.ellipse(0, r * 0.48, r * 0.12, r * 0.22, 0, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawGameOver(){
+  ctx.fillStyle = '#170f10'; ctx.fillRect(0, 0, L.w, L.h);
+  const y = L.h * 0.28;
+  txtOut('성벽이 무너졌다', L.w / 2, y, 28, '#ff8a8a', 'center', 6);
+  txt('판 ' + G.lastStage + ' 실패', L.w / 2, y + 34, 15, '#e8eef8', 'center');
+  txt('같은 판을 다시 도전할 수 있습니다', L.w / 2, y + 58, 11, '#8fa2c0', 'center');
+  txt('재화와 무기 레벨은 남습니다', L.w / 2, y + 74, 11, '#8fa2c0', 'center');
+
+  const bw = 210, bx = (L.w - bw) / 2;
+  // 재도전 — 영웅을 다시 고르고 같은 판을 처음부터
+  button(bx, y + 100, bw, 50, '판 ' + G.lastStage + ' 다시 도전',
+         function(){ G.screen = 'pick'; }, '#3ac13a');
+  // 영웅 탭에서 무기를 키우고 오는 길
+  button(bx, y + 160, bw, 42, '영웅 강화하러 가기',
+         function(){ G.screen = 'heroes'; }, '#3f79c8', 15);
+  button(bx, y + 210, bw, 38, '홈으로',
+         function(){ G.screen = 'main'; }, '#4a5568', 14);
+}
+
+
+/* ============================================================================
+   입력
+   ========================================================================== */
+function onTap(x, y){
+  for (let i = HIT.length - 1; i >= 0; i--){
+    const b = HIT[i];
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h){ b.fn(); return; }
+  }
+  if (G.screen === 'reward') rewardTap();
+}
+
+cv.addEventListener('pointerdown', function(e){
+  const r = cv.getBoundingClientRect();
+  const px = (e.clientX - r.left) * (cv.width  / Math.max(1, r.width));
+  const py = (e.clientY - r.top)  * (cv.height / Math.max(1, r.height));
+  onTap((px - S.ox) / S.s, (py - S.oy) / S.s);
+}, { passive:true });
+
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', resize);
+
+
+/* ============================================================================
+   루프
+   ========================================================================== */
+function update(dt){
+  if (G.screen === 'battle') updBattle(dt);
+  else if (G.screen === 'reward') updReward(dt);
+  else if (G.screen === 'levelup') updParts(dt);
+
+  G.saveT -= dt;
+  if (G.saveT <= 0){ G.saveT = 1.0; if (G.saveDirty) save(); }
+}
+
+function draw(){
+  HIT = [];
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#11150f';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.restore();
+  ctx.setTransform(S.s, 0, 0, S.s, S.ox, S.oy);
+
+  if (G.screen === 'main') drawMain();
+  else if (G.screen === 'pick') drawPick();
+  else if (G.screen === 'heroes') drawHeroes();
+  else if (G.screen === 'spell') drawSpells();
+  else if (G.screen === 'herodetail') drawHeroDetail();
+  else if (G.screen === 'battle') drawBattle();
+  else if (G.screen === 'levelup') drawLevelUp();
+  else if (G.screen === 'mimic') drawMimicReward();
+  else if (G.screen === 'reward') drawReward();
+  else drawGameOver();
+}
+
+let last = 0;
+function frame(ts){
+  if (!last) last = ts;
+  let dt = (ts - last) / 1000;
+  last = ts;
+  if (dt > 0.05) dt = 0.05;          // 탭 전환 후 한꺼번에 진행되는 것 방지
+  G.t += dt;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+load();
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
