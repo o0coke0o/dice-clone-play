@@ -96,12 +96,26 @@ const CFG = {
        주사위는 영웅의 것이고, 무기 레벨도 이미 영웅별이라 결이 같다.
      cost 는 그 등급으로 '올라가는' 값이다(실버는 시작 등급이라 0).
      ⚠ 등급을 더 넣을 때는 이 배열에만 줄을 더한다. 아래 코드는 길이를 세지 않는다. */
+  /* look = 주사위를 그리는 방식. 등급이 오를수록 눈에 띄게 화려해진다(David 지시).
+       sheen  윗면 광택의 진하기
+       rim    면 테두리 색 — 등급 색을 그대로 쓴다
+       rimW   테두리 굵기
+       facet  보석 컷 수. 0 = 민짜, 1 = 한 겹, 2 = 두 겹, 3 = 프리즘 줄까지
+       glow   주사위 뒤에서 번지는 빛의 세기(0 = 없음)
+       glowRGB  그 빛의 색. rgba() 로 쓰려고 숫자만 적는다
+       spark  주위를 도는 반짝임 개수
+     ⚠ 등급을 더 넣을 때는 look 도 같이 적을 것. 빠지면 실버 모양으로 그려진다. */
   diceTiers: [
-    { key:'silver',   name:'실버',       base:1, cost:0,   col:'#c8d2dc', col2:'#8b97a3' },
-    { key:'gold',     name:'골드',       base:2, cost:40,  col:'#ffd75e', col2:'#c9962a' },
-    { key:'platinum', name:'플래티넘',   base:3, cost:110, col:'#dfe9f2', col2:'#93a6b8' },
-    { key:'emerald',  name:'에메랄드',   base:4, cost:260, col:'#63e6a4', col2:'#1f8f5f' },
-    { key:'diamond',  name:'다이아몬드', base:5, cost:600, col:'#8fe9ff', col2:'#2b9fd4' },
+    { key:'silver',   name:'실버',       base:1, cost:0,   col:'#c8d2dc', col2:'#8b97a3',
+      look:{ sheen:0.22, rim:'rgba(255,255,255,0.34)', rimW:1,   facet:0, glow:0,    glowRGB:'200,210,220', spark:0 } },
+    { key:'gold',     name:'골드',       base:2, cost:40,  col:'#ffd75e', col2:'#c9962a',
+      look:{ sheen:0.34, rim:'rgba(255,236,170,0.85)', rimW:1.6, facet:0, glow:0.20, glowRGB:'255,215,94',  spark:0 } },
+    { key:'platinum', name:'플래티넘',   base:3, cost:110, col:'#dfe9f2', col2:'#93a6b8',
+      look:{ sheen:0.46, rim:'rgba(255,255,255,0.95)', rimW:2,   facet:1, glow:0.30, glowRGB:'223,233,242', spark:1 } },
+    { key:'emerald',  name:'에메랄드',   base:4, cost:260, col:'#63e6a4', col2:'#1f8f5f',
+      look:{ sheen:0.52, rim:'rgba(184,255,224,0.95)', rimW:2,   facet:2, glow:0.44, glowRGB:'99,230,164',  spark:2 } },
+    { key:'diamond',  name:'다이아몬드', base:5, cost:600, col:'#8fe9ff', col2:'#2b9fd4',
+      look:{ sheen:0.62, rim:'rgba(232,251,255,1)',    rimW:2.4, facet:3, glow:0.62, glowRGB:'143,233,255', spark:4 } },
   ],
 
   /* ---- 주사위 정육면체 --------------------------------------------------
@@ -173,10 +187,40 @@ const CFG = {
         desc:'파이어볼이 터질 때 폭발이 더 넓게 퍼집니다',
         effect:{ w:'strong', stat:'splashR', mulPerLv:0.30 } },   // [임시] 레벨당 +30%
 
-      /* 2~16 — 아직 빈 칸이다. 스킬이 정해지면 soon 을 지우고 위와 같은 형식으로 채운다 */
-      { id:'slot02', soon:true }, { id:'slot03', soon:true }, { id:'slot04', soon:true },
-      { id:'slot05', soon:true }, { id:'slot06', soon:true }, { id:'slot07', soon:true },
-      { id:'slot08', soon:true }, { id:'slot09', soon:true }, { id:'slot10', soon:true },
+      /* 2~8 — 2026-08-18 (David 지시) '임의로 8개'. 절반을 채운다.
+         고른 기준: ①효과가 한 곳에서만 계산돼 '카드는 얻었는데 아무 일도 안 일어난다'가 안 생길 것
+                   ②마법사·궁수에 고르게 나눌 것 ③숫자만 오르는 카드만 늘어놓지 말 것.
+         배수는 전부 [임시] — 해보고 세거나 약하면 mulPerLv 만 고치면 된다. */
+
+      /* 마법사 */
+      { id:'waveDmg', kind:'skill', hero:'mage', name:'물결 강화',
+        desc:'물결 유도탄의 피해가 커집니다',
+        effect:{ w:'fast', stat:'dmg', mulPerLv:0.12 } },
+      { id:'waveSpeed', kind:'skill', hero:'mage', name:'물결 가속',
+        desc:'물결 유도탄이 더 빨리 날아가 적을 일찍 따라잡습니다',
+        effect:{ w:'fast', stat:'speed', mulPerLv:0.18 } },
+      { id:'fireDmg', kind:'skill', hero:'mage', name:'화염 강화',
+        desc:'파이어볼의 피해가 커집니다',
+        effect:{ w:'strong', stat:'dmg', mulPerLv:0.12 } },
+
+      /* 궁수 */
+      { id:'swiftDmg', kind:'skill', hero:'archer', name:'속사 강화',
+        desc:'속사 화살의 피해가 커집니다',
+        effect:{ w:'swift', stat:'dmg', mulPerLv:0.12 } },
+      { id:'iceDmg', kind:'skill', hero:'archer', name:'얼음 강화',
+        desc:'얼음 화살의 피해가 커집니다',
+        effect:{ w:'ice', stat:'dmg', mulPerLv:0.12 } },
+      { id:'frostHold', kind:'skill', hero:'archer', name:'서리 지속',
+        desc:'얼음에 맞은 적이 더 오래 느려집니다',
+        effect:{ w:'ice', stat:'slowT', mulPerLv:0.25 } },
+
+      /* 공용 — 첫 perk. 전투 효과가 아니라 성장 속도를 건드린다 */
+      { id:'study', kind:'perk', hero:null, name:'수련',
+        desc:'두 영웅 모두 경험치를 더 많이 받습니다',
+        effect:{ stat:'xpGain', mulPerLv:0.15 } },
+
+      /* 9~16 — 아직 빈 칸이다. 스킬이 정해지면 soon 을 지우고 위와 같은 형식으로 채운다 */
+      { id:'slot09', soon:true }, { id:'slot10', soon:true },
       { id:'slot11', soon:true }, { id:'slot12', soon:true }, { id:'slot13', soon:true },
       { id:'slot14', soon:true }, { id:'slot15', soon:true }, { id:'slot16', soon:true },
     ],
@@ -462,6 +506,10 @@ function diceTierIdx(hid){
   return clamp(Math.floor(v || 0), 0, n);
 }
 function diceTier(hid){ return CFG.diceTiers[diceTierIdx(hid)]; }
+/* 주사위를 그릴 때 쓰는 색과 모양 — 영웅 색이 아니라 '등급' 색이다(David 지시).
+   영웅 구분은 면에 그려진 무기 아이콘이 계속 해준다(마법사 물결·화염 / 궁수 화살·얼음). */
+function dicePal(hid){ const T = diceTier(hid); return [T.col, T.col2]; }
+function diceLook(hid){ return diceTier(hid).look || CFG.diceTiers[0].look; }
 /* 그 영웅이 '판을 시작할 때' 갖는 여섯 면. 등급의 base 를 깔고 시작한다.
    화면(영웅 상세·전투력)과 실제 판이 반드시 같은 값을 보게 이 함수만 쓴다. */
 function heroStartFaces(hid){
@@ -525,7 +573,9 @@ const xpNeed    = lv => CFG.xp.start + CFG.xp.step * (lv - 1);
 function wdmg(w){
   const W = CFG.weapons[w];
   const lv = (G.meta && G.meta.wlv[w]) || 1;
-  return W.dmg + W.dmgPerLv * (lv - 1);
+  // 2026-08-18: 피해 강화 스킬(물결·화염·속사·얼음)이 여기 하나로 걸린다.
+  //   무기 레벨과 같은 성격(영구)이라 전투력 표시에도 자연히 반영된다.
+  return (W.dmg + W.dmgPerLv * (lv - 1)) * skillMul(w, 'dmg');
 }
 
 /* ---- 스킬 카드 ------------------------------------------------------------
@@ -541,14 +591,23 @@ function skillLv(id){ return (G.meta && G.meta.skills && G.meta.skills[id]) || 0
 
 /* 모아둔 카드가 그 무기의 그 값을 몇 배로 만드는가. 아무것도 없으면 1 배 그대로.
    같은 값을 키우는 카드가 여러 장이면 배수가 더해진다(1 + 0.3 + 0.2 …) */
+/* 2026-08-18: effect.w 가 없는 카드(전체에 걸리는 perk)도 받는다.
+   부를 때 w 에 null 을 넘기면 그런 카드만 모인다 — 무기 카드와 섞이지 않는다. */
 function skillMul(w, stat){
   let mul = 1;
+  const key = w || null;
   for (const sk of CFG.skills.list){
     if (sk.soon || !sk.effect) continue;
-    if (sk.effect.w !== w || sk.effect.stat !== stat) continue;
+    if (sk.effect.stat !== stat) continue;
+    if ((sk.effect.w || null) !== key) continue;
     mul += sk.effect.mulPerLv * skillLv(sk.id);
   }
   return mul;
+}
+/* 탄속 — 스킬로 빨라진 실제 값. 조준 예측과 실제 발사가 같은 값을 써야 빗나가지 않는다 */
+function mSpeed(w){
+  const M = CFG.missile[w];
+  return (M ? M.speed : 0) * skillMul(w, 'speed');
 }
 /* 폭발 반경 — 스킬로 넓어진 실제 값. 폭발이 없는 무기는 0 */
 function splashR(w){
@@ -969,12 +1028,12 @@ function fireOne(hid, w){
   let aimX = t.x, aimY = t.y;
   if (!M.homing){
     // 직선탄은 목표가 내려올 위치를 예측해 조준한다. 현재 위치를 쏘면 자꾸 빗나간다
-    const tt = Math.hypot(t.x - ox, t.y - oy) / M.speed;
+    const tt = Math.hypot(t.x - ox, t.y - oy) / mSpeed(w);   // 2026-08-18: 예측도 스킬 반영된 탄속으로
     aimY = t.y + t.sp * tt;
   }
   const a = Math.atan2(aimY - oy, aimX - ox) + rnd(-sp, sp);
   G.bullets.push({
-    w:w, hid:hid, x:ox, y:oy, a:a, sp:M.speed, r:M.r, dmg:dmg, t:M.life,
+    w:w, hid:hid, x:ox, y:oy, a:a, sp:mSpeed(w), r:M.r, dmg:dmg, t:M.life,
     tgt:t, ph:rnd(0, TAU), trail:[],
   });
 
@@ -1068,7 +1127,7 @@ function updBullets(dt){
 function hitEnemy(e, dmg, hid, w){
   e.hp -= dmg;
   e.flash = 0.12;
-  if (w === 'ice') e.slowT = CFG.ice.slowT;    // 얼음 화살 — 잠깐 느려진다
+  if (w === 'ice') e.slowT = CFG.ice.slowT * skillMul('ice', 'slowT');   // 얼음 화살 — 잠깐 느려진다('서리 지속'이 늘린다)
   if (e.hp <= 0){ e.hp = 0; killEnemy(e, hid); }
 }
 
@@ -1186,6 +1245,7 @@ function updParts(dt){
    XP / 레벨업 3택
    ========================================================================== */
 function gainXp(hid, n){
+  n *= skillMul(null, 'xpGain');   // 2026-08-18: '수련' perk — 두 영웅 모두에 걸린다
   const h = G.run.heroes[hid];
   if (!h) return;
   h.xp += n;
@@ -1305,6 +1365,14 @@ function makeLoot(){
       kind:pickOne(CFG.reward.order), rot:rnd(0, TAU), vr:rnd(-3, 3), sc:rnd(0.85, 1.25),
     });
   }
+  // 스킬 카드팩 한 장을 재화 사이에 섞는다(David 지시).
+  // 다른 조각보다 크고 가운데 가까이 떨어져서 눈에 먼저 들어온다.
+  // 회전은 안 시킨다 — 뱅뱅 돌면 'SKILL' 글자를 못 읽는다(updReward 에서 살랑거리게만 한다)
+  G.loot.push({
+    x:cx, y:cy, vx:rnd(-45, 45), vy:rnd(-190, -130),
+    fy:L.h * rnd(0.40, 0.48),
+    kind:'skillpack', rot:0, vr:0, sc:2.1,
+  });
 }
 
 /* 카드팩 만들기 — 판이 끝날 때 한 번.
@@ -1350,7 +1418,9 @@ function updReward(dt){
   for (const p of G.loot){
     p.vy += 420 * dt;
     p.x += p.vx * dt; p.y += p.vy * dt;
-    p.rot += p.vr * dt;
+    // 카드팩은 글자를 읽어야 하므로 구르지 않고 살짝 흔들리기만 한다
+    if (p.kind === 'skillpack') p.rot = Math.sin(G.t * 2.2) * 0.10;
+    else p.rot += p.vr * dt;
     if (p.y > p.fy){ p.y = p.fy; p.vy *= -0.32; p.vx *= 0.72; p.vr *= 0.6; }
     p.x = clamp(p.x, 14, L.w - 14);
   }
@@ -1615,12 +1685,35 @@ function roundPoly(pts, r){
 }
 
 /* 한 면의 내용 — (0,0)~(side,side) 안에 그린다. 호출부가 기울여 놓는다 */
-function cubeFaceContent(side, f, pal){
+function cubeFaceContent(side, f, pal, look){
+  look = look || CFG.diceTiers[0].look;
   const g = ctx.createLinearGradient(0, 0, 0, side);
   g.addColorStop(0, pal[0]); g.addColorStop(1, pal[1]);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, side, side);
-  ctx.fillStyle = 'rgba(255,255,255,0.26)';           // 광택
+
+  // 보석 컷 — 등급이 오를수록 겹이 는다. 숫자·아이콘보다 먼저 깔아야 가려지지 않는다
+  if (look.facet >= 1){
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';         // 왼쪽 위에서 들어온 빛을 받는 면
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(side, 0); ctx.lineTo(side * 0.5, side * 0.5);
+    ctx.closePath(); ctx.fill();
+  }
+  if (look.facet >= 2){
+    ctx.fillStyle = 'rgba(0,20,30,0.16)';             // 반대쪽은 그늘이 져야 깎인 것처럼 보인다
+    ctx.beginPath();
+    ctx.moveTo(side, side); ctx.lineTo(0, side); ctx.lineTo(side * 0.5, side * 0.5);
+    ctx.closePath(); ctx.fill();
+  }
+  if (look.facet >= 3){
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';         // 프리즘 줄 하나
+    ctx.beginPath();
+    ctx.moveTo(side * 0.06, side * 0.94); ctx.lineTo(side * 0.30, side * 0.94);
+    ctx.lineTo(side * 0.94, side * 0.20); ctx.lineTo(side * 0.94, side * 0.02);
+    ctx.closePath(); ctx.fill();
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,' + look.sheen.toFixed(2) + ')';   // 광택
   ctx.beginPath();
   ctx.ellipse(side * 0.34, side * 0.2, side * 0.3, side * 0.11, -0.25, 0, TAU);
   ctx.fill();
@@ -1630,7 +1723,16 @@ function cubeFaceContent(side, f, pal){
 }
 
 /* 정육면체 주사위 하나 */
-function drawCube(cx, cy, side, faces, ax, ay, pal){
+function drawCube(cx, cy, side, faces, ax, ay, pal, look){
+  look = look || CFG.diceTiers[0].look;
+  // 등급이 높으면 주사위 뒤에서 빛이 번진다. 주사위보다 먼저 깔아야 뒤로 간다
+  if (look.glow > 0){
+    const gr = ctx.createRadialGradient(cx, cy, side * 0.30, cx, cy, side * 1.15);
+    gr.addColorStop(0, 'rgba(' + look.glowRGB + ',' + (look.glow * 0.55).toFixed(3) + ')');
+    gr.addColorStop(1, 'rgba(' + look.glowRGB + ',0)');
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(cx, cy, side * 1.15, 0, TAU); ctx.fill();
+  }
   const h = side / 2, vis = [];
   for (let i = 0; i < CUBE_FACES.length; i++){
     const F = CUBE_FACES[i];
@@ -1656,7 +1758,7 @@ function drawCube(cx, cy, side, faces, ax, ay, pal){
     ctx.clip();
     ctx.save();
     ctx.transform(ux / side, uy / side, vx / side, vy / side, ox, oy);
-    cubeFaceContent(side, faces[V.i], pal);
+    cubeFaceContent(side, faces[V.i], pal, look);
     ctx.restore();
     // 카메라를 덜 향한 면은 어둡게 — 입체감
     const dark = 1 - clamp(V.n[2], 0, 1);
@@ -1665,8 +1767,21 @@ function drawCube(cx, cy, side, faces, ax, ay, pal){
       roundPoly(quad, side * CFG.cube.round); ctx.fill();
     }
     ctx.restore();
+    // 어두운 모서리로 형태를 잡고, 그 위에 등급 색 테두리를 한 겹 올린다
     ctx.strokeStyle = 'rgba(10,40,80,0.35)'; ctx.lineWidth = 1;
     roundPoly(quad, side * CFG.cube.round); ctx.stroke();
+    ctx.strokeStyle = look.rim; ctx.lineWidth = look.rimW;
+    roundPoly(quad, side * CFG.cube.round); ctx.stroke();
+  }
+
+  // 주위를 도는 반짝임 — 플래티넘부터 하나씩 는다
+  for (let i = 0; i < look.spark; i++){
+    const a  = G.t * (0.8 + i * 0.31) + i * 2.2;
+    const d  = side * (0.62 + 0.10 * Math.sin(G.t * 2.1 + i));
+    const tw = 0.30 + 0.70 * Math.abs(Math.sin(G.t * 3.1 + i * 1.7));
+    ctx.globalAlpha = tw;
+    sparkle4(cx + Math.cos(a) * d, cy + Math.sin(a) * d * 0.78, side * 0.11 * tw, look.rim);
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -1724,6 +1839,26 @@ function heroPortrait(hid, x, y, w, h){
 
 
 /* ---- 재화 아이콘 --------------------------------------------------------- */
+/* 스킬 카드팩 — 전리품에 딱 하나 섞여 떨어지는 보라색 카드 뭉치(David 지시).
+   상자 다음에 나오는 카드팩과 같은 색·같은 별이라 '저게 그거구나'가 바로 보인다.
+   x,y 는 한가운데다 — 전리품 조각은 자기 자리에서 회전하므로 중심 기준이어야 한다. */
+function icoSkillPack(x, y, s){
+  const w = s * 1.45, h = s * 1.95, r = s * 0.20;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = '#241a47';                      // 뒤에 한 장 더 겹쳐 '뭉치'로 보이게
+  rr(-w / 2 + s * 0.16, -h / 2 - s * 0.12, w, h, r); ctx.fill();
+  ctx.fillStyle = '#3b2a6b';
+  rr(-w / 2, -h / 2, w, h, r); ctx.fill();
+  ctx.fillStyle = '#543d97';
+  rr(-w / 2 + s * 0.12, -h / 2 + s * 0.12, w - s * 0.24, h - s * 0.24, r * 0.8); ctx.fill();
+  ctx.strokeStyle = '#ffd75e'; ctx.lineWidth = Math.max(1, s * 0.09);
+  rr(-w / 2 + s * 0.12, -h / 2 + s * 0.12, w - s * 0.24, h - s * 0.24, r * 0.8); ctx.stroke();
+  star(0, -h * 0.17, s * 0.30);
+  txtOut('SKILL', 0, h * 0.26, Math.round(s * 0.44), '#ffe6a8', 'center', Math.max(2, s * 0.13));
+  ctx.restore();
+}
+
 function icoCur(kind, x, y, s){
   ctx.save(); ctx.translate(x, y); ctx.scale(s / 10, s / 10);
   ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(20,24,18,0.65)'; ctx.lineWidth = 1.4;
@@ -2196,7 +2331,7 @@ function drawDeck(){
     ctx.beginPath();
     ctx.ellipse(ccx, y + L.cardH - 1, C.side * 0.42 * (1 - arc * 0.35), C.side * 0.1, 0, 0, TAU);
     ctx.fill();
-    drawCube(ccx, ccy, C.side * (1 + C.grow * arc), h.faces, d.ax, d.ay, [H.tile, H.tile2]);
+    drawCube(ccx, ccy, C.side * (1 + C.grow * arc), h.faces, d.ax, d.ay, dicePal(hid), diceLook(hid));
   }
 }
 
@@ -2287,7 +2422,7 @@ function drawUpCard(x, y, w, h, c){
     const tx0 = x + (w - (tw * n + tgap * (n - 1))) / 2, ty = y + 62;
     for (let i = 0; i < n; i++){
       const f = hh.faces[c.targets[i]];
-      faceTile(tx0 + i * (tw + tgap), ty, tw, tw, f, { pal:[H.tile, H.tile2] });
+      faceTile(tx0 + i * (tw + tgap), ty, tw, tw, f, { pal:dicePal(cardHero()) });
       txtOut('+' + c.add, tx0 + i * (tw + tgap) + tw / 2, ty + tw + 12,
              n === 3 ? 13 : 16, '#57ef4a', 'center', 3);
     }
@@ -2324,6 +2459,18 @@ function drawMimicReward(){
   }
   const bwB = Math.min(200, L.w - 80);
   button((L.w - bwB) / 2, by + 74 + 176 + 22, bwB, 50, '확인', function(){ takeMimicCard(); }, '#3ac13a');
+}
+
+/* 네 갈래 반짝임 — 높은 등급 주사위 주위에서 깜빡인다 */
+function sparkle4(x, y, s, col){
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(x, y - s);
+  ctx.quadraticCurveTo(x + s * 0.16, y - s * 0.16, x + s, y);
+  ctx.quadraticCurveTo(x + s * 0.16, y + s * 0.16, x, y + s);
+  ctx.quadraticCurveTo(x - s * 0.16, y + s * 0.16, x - s, y);
+  ctx.quadraticCurveTo(x - s * 0.16, y - s * 0.16, x, y - s);
+  ctx.closePath(); ctx.fill();
 }
 
 function star(x, y, s){
@@ -2369,7 +2516,8 @@ function drawReward(){
   if (b.rewardPhase === 1){
     for (const p of G.loot){
       ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
-      icoCur(p.kind, 0, 0, 13 * p.sc);
+      if (p.kind === 'skillpack') icoSkillPack(0, 0, 13 * p.sc);
+      else                        icoCur(p.kind, 0, 0, 13 * p.sc);
       ctx.restore();
     }
     drawRewardRow(L.h * 0.66);
@@ -3007,7 +3155,7 @@ function drawHeroDetail(){
   for (let i = 0; i < bf.length; i++){
     const left = i < 3, k = left ? i : i - 3;
     const tx = left ? px - ts - 10 : px + pw + 10;
-    faceTile(tx, tTop + k * (ts + tgap), ts, ts, bf[i], { pal:[H.tile, H.tile2] });
+    faceTile(tx, tTop + k * (ts + tgap), ts, ts, bf[i], { pal:dicePal(hid) });
   }
 
   // 전투력
