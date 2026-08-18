@@ -106,17 +106,33 @@ const CFG = {
        spark  주위를 도는 반짝임 개수
      ⚠ 등급을 더 넣을 때는 look 도 같이 적을 것. 빠지면 실버 모양으로 그려진다. */
   diceTiers: [
-    { key:'silver',   name:'실버',       base:1, cost:0,   col:'#c8d2dc', col2:'#8b97a3',
-      look:{ sheen:0.22, rim:'rgba(255,255,255,0.34)', rimW:1,   facet:0, glow:0,    glowRGB:'200,210,220', spark:0 } },
-    { key:'gold',     name:'골드',       base:2, cost:40,  col:'#ffd75e', col2:'#c9962a',
-      look:{ sheen:0.34, rim:'rgba(255,236,170,0.85)', rimW:1.6, facet:0, glow:0.20, glowRGB:'255,215,94',  spark:0 } },
-    { key:'platinum', name:'플래티넘',   base:3, cost:110, col:'#dfe9f2', col2:'#93a6b8',
-      look:{ sheen:0.46, rim:'rgba(255,255,255,0.95)', rimW:2,   facet:1, glow:0.30, glowRGB:'223,233,242', spark:1 } },
-    { key:'emerald',  name:'에메랄드',   base:4, cost:260, col:'#63e6a4', col2:'#1f8f5f',
-      look:{ sheen:0.52, rim:'rgba(184,255,224,0.95)', rimW:2,   facet:2, glow:0.44, glowRGB:'99,230,164',  spark:2 } },
-    { key:'diamond',  name:'다이아몬드', base:5, cost:600, col:'#8fe9ff', col2:'#2b9fd4',
-      look:{ sheen:0.62, rim:'rgba(232,251,255,1)',    rimW:2.4, facet:3, glow:0.62, glowRGB:'143,233,255', spark:4 } },
+    /* 2026-08-19 (David 지시) 개편 두 가지:
+         ① 브론즈를 맨 아래에 넣는다. 시작 등급이 '실버'라 회색이었고 금속처럼 안 보였다.
+         ② 등급은 이제 시작 눈금을 올리지 않는다. 눈금은 코인으로 면마다 따로 올린다(CFG.faceUp).
+            등급이 정하는 것은 '동시에 켤 수 있는 스킬 수'다 — 스킬을 더 쓰고 싶으면
+            더 높은 등급이 갖고 싶어지게.
+       skills = 그 등급에서 켤 수 있는 스킬 개수(영웅마다 따로 센다).
+       col/col2/hi = 금속 띠를 만드는 세 색. hi 가 반사되는 밝은 띠다 —
+         두 색만 쓰면 플라스틱처럼 보인다. */
+    { key:'bronze',   name:'브론즈',     skills:1, cost:0,    col:'#e2985c', col2:'#7d4519', hi:'#ffdcb0',
+      look:{ sheen:0.20, rim:'rgba(255,214,168,0.55)', rimW:1,   facet:0, glow:0,    glowRGB:'226,152,92',  spark:0 } },
+    { key:'silver',   name:'실버',       skills:2, cost:40,   col:'#dde5ec', col2:'#79879a', hi:'#ffffff',
+      look:{ sheen:0.30, rim:'rgba(255,255,255,0.70)', rimW:1.3, facet:0, glow:0.12, glowRGB:'214,226,238', spark:0 } },
+    { key:'gold',     name:'골드',       skills:3, cost:110,  col:'#ffd75e', col2:'#a3701a', hi:'#fff8d6',
+      look:{ sheen:0.40, rim:'rgba(255,236,170,0.90)', rimW:1.7, facet:1, glow:0.24, glowRGB:'255,215,94',  spark:1 } },
+    { key:'platinum', name:'플래티넘',   skills:4, cost:260,  col:'#eef4f9', col2:'#7f92a5', hi:'#ffffff',
+      look:{ sheen:0.50, rim:'rgba(255,255,255,0.98)', rimW:2,   facet:2, glow:0.34, glowRGB:'232,241,248', spark:2 } },
+    { key:'emerald',  name:'에메랄드',   skills:5, cost:600,  col:'#63e6a4', col2:'#136b44', hi:'#d6ffec',
+      look:{ sheen:0.56, rim:'rgba(184,255,224,0.98)', rimW:2.2, facet:3, glow:0.48, glowRGB:'99,230,164',  spark:3 } },
+    { key:'diamond',  name:'다이아몬드', skills:6, cost:1200, col:'#8fe9ff', col2:'#1f7fb4', hi:'#f4ffff',
+      look:{ sheen:0.64, rim:'rgba(240,255,255,1)',    rimW:2.5, facet:3, glow:0.66, glowRGB:'143,233,255', spark:5 } },
   ],
+
+  /* 시작 눈금 — 면마다 따로 올린다(2026-08-19 David 지시). 재화는 코인(gold).
+     일괄이 아니라 여섯 면을 각각 1씩 올린다. cost 는 그 면의 다음 한 칸 값이고
+     올릴수록 step 만큼 비싸진다. max 는 면 하나가 올라갈 수 있는 최대 칸수. */
+  faceUp: { cur:'gold', cost:12, step:8, max:4 },
+
 
   /* ---- 주사위 정육면체 --------------------------------------------------
      둥근 모서리 정육면체가 슬롯에서 튀어올라 굴러 착지한다.
@@ -164,6 +180,9 @@ const CFG = {
     },
   },
   heroOrder:['mage','archer'],
+  /* 합류 순서 → 하단 슬롯 번호. [가운데, 오른쪽, 왼쪽] 순으로 채운다 (David 지시).
+     슬롯은 왼쪽부터 0·1·2 이므로 1(가운데) → 2(오른쪽) → 0(왼쪽)이 된다. */
+  slotOrder:[1, 2, 0],
 
   /* ---- 스킬 카드 (주문서 탭) ---------------------------------------------
      주문서 탭에 4x4 = 16칸이 있고, 판을 하나 끝낼 때마다 카드팩 3택으로 한 장씩 모은다.
@@ -447,10 +466,18 @@ function layout(){
   L.wallY = Math.round(VH * 0.735);                     // [관찰] 성벽 위치 비율
   L.wallY = Math.max(L.hud + 150, L.wallY);
   L.groundH = VH - L.wallY;
-  // 하단 슬롯 3칸 — 가운데가 마법사, 오른쪽이 궁수, 왼쪽은 나중에 추가할 영웅 자리 [관찰]
+  // 하단 슬롯 3칸. 자리는 영웅이 아니라 '합류한 순서'로 정해진다 (2026-08-19 David 지시):
+  //   처음 고른 영웅 → 가운데 / 나중에 합류 → 오른쪽 / 그다음 → 왼쪽
+  // 전에는 마법사=가운데·궁수=오른쪽으로 박혀 있어서 궁수로 시작하면 오른쪽에서 시작했다.
   L.cardW = 56; L.cardH = 54;
   L.slotX = [0.20, 0.50, 0.80].map(f => Math.round(L.w * f - L.cardW / 2));
-  L.cardX = { mage:L.slotX[1], archer:L.slotX[2] };
+  L.cardX = {};
+  const ord = (G.run && G.run.order) ? G.run.order : [];
+  for (let i = 0; i < CFG.heroOrder.length; i++){
+    const hid = CFG.heroOrder[i], k = ord.indexOf(hid);
+    // 아직 안 나온 영웅도 자리는 있어야 한다(합류하는 순간 그려지므로) — 순서 뒤에 세운다
+    L.cardX[hid] = L.slotX[CFG.slotOrder[(k >= 0 ? k : ord.length + i) % CFG.slotOrder.length]];
+  }
   // 슬롯 아래로 굴림 막대 → 경험치 막대 → Lv 글자 순서. 전체가 바닥에 닿지 않게 위로 올린다
   L.barH = 8; L.lvH = 12;
   const stackH = L.cardH + 6 + L.barH + 3 + L.barH + L.lvH;
@@ -483,12 +510,16 @@ function newMeta(){
   const wlv = {};
   for (const k in CFG.weapons) wlv[k] = 1;   // 무기 레벨은 영구. 레벨업 UI는 다음 단계이므로 항상 1
   // 2026-08-18: 주사위 등급은 영웅마다 따로 오른다. 0 = 실버(시작 등급).
+  // 2026-08-19: 면마다 올려 둔 칸수. [면0..면5], 영웅별. 코인으로 산다
+  const faceUp = {};
+  for (const h of CFG.heroOrder) faceUp[h] = [0, 0, 0, 0, 0, 0];
   const dice = {};
   for (const h of CFG.heroOrder) dice[h] = 0;
   return {
     cur:{ dagger:0, crystal:0, gold:0, amethyst:0, potion:0 },
     wlv:wlv,
     dice:dice,
+    faceUp:faceUp,
     // 2026-08-18: 모은 스킬 카드. { 스킬id : 레벨 } 이고 없는 키 = 아직 못 얻은 카드.
     // 영구다 — 판이 끝나거나 게임오버가 나도 사라지지 않는다
     skills:{},
@@ -508,13 +539,39 @@ function diceTierIdx(hid){
 function diceTier(hid){ return CFG.diceTiers[diceTierIdx(hid)]; }
 /* 주사위를 그릴 때 쓰는 색과 모양 — 영웅 색이 아니라 '등급' 색이다(David 지시).
    영웅 구분은 면에 그려진 무기 아이콘이 계속 해준다(마법사 물결·화염 / 궁수 화살·얼음). */
-function dicePal(hid){ const T = diceTier(hid); return [T.col, T.col2]; }
+function dicePal(hid){ const T = diceTier(hid); return [T.col, T.col2, T.hi]; }
 function diceLook(hid){ return diceTier(hid).look || CFG.diceTiers[0].look; }
 /* 그 영웅이 '판을 시작할 때' 갖는 여섯 면. 등급의 base 를 깔고 시작한다.
    화면(영웅 상세·전투력)과 실제 판이 반드시 같은 값을 보게 이 함수만 쓴다. */
+/* 판을 시작할 때의 6면. 눈금은 등급이 아니라 '면마다 올려 둔 칸수'가 정한다
+   (2026-08-19 개편 — 그 전에는 diceTier().base 가 여섯 면을 한꺼번에 올렸다). */
+function faceUps(hid){
+  const m = (G.meta && G.meta.faceUp && G.meta.faceUp[hid]) || null;
+  const n = CFG.heroes[hid].baseFaces.length;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(m ? clamp(Math.floor(m[i] || 0), 0, CFG.faceUp.max) : 0);
+  return out;
+}
 function heroStartFaces(hid){
-  const b = diceTier(hid).base;
-  return CFG.heroes[hid].baseFaces.map(f => ({ w:f.w, c:b }));
+  const up = faceUps(hid);
+  return CFG.heroes[hid].baseFaces.map((f, i) => ({ w:f.w, c:1 + up[i] }));
+}
+/* 그 면을 한 칸 더 올리는 데 드는 코인 */
+function faceUpCost(hid, i){
+  const F = CFG.faceUp;
+  return F.cost + F.step * faceUps(hid)[i];
+}
+function faceUpBuy(hid, i){
+  const F = CFG.faceUp, up = faceUps(hid);
+  if (up[i] >= F.max) return false;
+  const cost = faceUpCost(hid, i);
+  if (G.meta.cur[F.cur] < cost) return false;
+  G.meta.cur[F.cur] -= cost;
+  if (!G.meta.faceUp) G.meta.faceUp = {};
+  if (!G.meta.faceUp[hid]) G.meta.faceUp[hid] = [];
+  G.meta.faceUp[hid][i] = up[i] + 1;
+  save();
+  return true;
 }
 
 /* 발사 한 발당 짧은 진동.
@@ -545,11 +602,27 @@ function newHero(hid){
    나머지 한 명은 전투 중 3택의 '배치' 카드로 합류한다. */
 function resetHeroes(run){
   run.heroes = { mage:null, archer:null };
+  run.order  = [];                    // 합류한 차례. 이게 곧 하단 슬롯 자리다
+}
+
+/* 영웅 한 명을 판에 세운다. 부르는 곳이 둘이라(영웅 선택 화면 · 전투 중 합류 카드)
+   자리 계산을 여기 한 곳에 둔다 — 호출처마다 적으면 반드시 하나가 빠진다. */
+function addHero(run, hid){
+  if (run.heroes[hid]) return run.heroes[hid];
+  run.heroes[hid] = newHero(hid);
+  if (!run.order) run.order = [];
+  run.order.push(hid);
+  // 전투 중에 합류했으면 굴릴 주사위도 여기서 같이 만든다.
+  // 부르는 쪽에 맡기면 새 합류 경로가 생길 때마다 빠뜨린다 — 실제로 빠뜨려서 화면이 터졌다
+  if (G.b && G.b.dice && !G.b.dice[hid]) G.b.dice[hid] = newDiceRt(hid);
+  layout();                           // 자리가 바뀌었으니 슬롯을 다시 잡는다
+  return run.heroes[hid];
 }
 
 function newRun(){
   const run = {
     started:false,
+    order:[],
     stage:1, wave:1,
     wallHp:CFG.wall.hp,
     heroes:null,
@@ -575,7 +648,10 @@ function wdmg(w){
   const lv = (G.meta && G.meta.wlv[w]) || 1;
   // 2026-08-18: 피해 강화 스킬(물결·화염·속사·얼음)이 여기 하나로 걸린다.
   //   무기 레벨과 같은 성격(영구)이라 전투력 표시에도 자연히 반영된다.
-  return (W.dmg + W.dmgPerLv * (lv - 1)) * skillMul(w, 'dmg');
+  // ⚠ 반올림 필수. 스킬 배수(×1.12 등)를 곱하면 5.6000000000000005 같은 값이 나오고,
+  //   그게 카드에 그대로 찍혀 숫자가 화면 밖으로 넘쳤다(2026-08-19 David 보고).
+  //   피해는 원래 정수로만 다루므로 여기서 한 번 정리하면 표시·계산이 같이 맞는다.
+  return Math.round((W.dmg + W.dmgPerLv * (lv - 1)) * skillMul(w, 'dmg'));
 }
 
 /* ---- 스킬 카드 ------------------------------------------------------------
@@ -699,6 +775,17 @@ function load(){
         if (typeof v === 'number' && v >= 0) G.meta.dice[h] = clamp(Math.floor(v), 0, CFG.diceTiers.length - 1);
       }
     }
+    // 2026-08-19: 면마다 올려 둔 눈금. 옛 저장본엔 없으므로 없으면 0 으로 둔다
+    if (m.faceUp && typeof m.faceUp === 'object'){
+      for (const h of CFG.heroOrder){
+        const src = m.faceUp[h];
+        if (!Array.isArray(src)) continue;
+        for (let i = 0; i < G.meta.faceUp[h].length; i++){
+          const v = src[i];
+          if (typeof v === 'number' && v >= 0) G.meta.faceUp[h][i] = clamp(Math.floor(v), 0, CFG.faceUp.max);
+        }
+      }
+    }
     // 2026-08-18: 모은 스킬 카드. 옛 저장본엔 없으므로 없으면 빈 채로 둔다.
     // CFG.skills.list 에 없는 id 는 버린다 — 이름을 바꾼 옛 카드가 유령으로 남지 않게
     if (m.skills && typeof m.skills === 'object'){
@@ -730,6 +817,11 @@ function load(){
       for (const hid of CFG.heroOrder){
         n.heroes[hid] = r.heroes[hid] ? normHero(r.heroes[hid], hid) : null;
       }
+      // 합류 순서 = 하단 슬롯 자리. 옛 저장본엔 없으므로 살아있는 영웅으로 채워 넣는다
+      n.order = [];
+      const src = Array.isArray(r.order) ? r.order : [];
+      for (const hid of src) if (n.heroes[hid] && n.order.indexOf(hid) < 0) n.order.push(hid);
+      for (const hid of CFG.heroOrder) if (n.heroes[hid] && n.order.indexOf(hid) < 0) n.order.push(hid);
     } else {
       G.wiped = true;
     }
@@ -774,6 +866,18 @@ function newDiceRt(hid){
     ax0:0, ay0:0, ax1:t[0] + CFG.cube.tiltX, ay1:t[1] + CFG.cube.tiltY,
     kick:0,                   // 발사 반동
   };
+}
+
+/* 다음 웨이브를 지금 출발시킨다 (2026-08-19 David 지시).
+   ⚠ 여기서 직접 웨이브를 올리지 않는다 — 남은 시간을 0으로 만들어
+     updWave 의 기존 종료 판정을 그대로 태운다. 규칙이 두 곳에 갈리면
+     '남은 적은 사라지지 않는다' 같은 조건이 한쪽에서만 지켜진다. */
+function forceNextWave(){
+  const b = G.b;
+  if (!b || G.screen !== 'battle' || b.menu) return false;
+  if (b.phase === 'wave'){ b.waveT = 0; return true; }
+  if (b.phase === 'gap'){  b.gapT  = 0; return true; }
+  return false;                      // 정리 중·보스 경고·보스전에는 안 먹는다
 }
 
 function beginWave(){
@@ -1314,10 +1418,8 @@ function takeCard(c){
   for (const j of c.targets) h.faces[j].c += c.add;
   if (c.cd) h.cdMul *= c.cd;
 
-  if (c.hero && !G.run.heroes[c.hero]){        // 궁수 배치 — 전용 주사위와 경험치가 함께 생긴다
-    G.run.heroes[c.hero] = newHero(c.hero);
-    G.b.dice[c.hero] = newDiceRt(c.hero);
-    layout();
+  if (c.hero && !G.run.heroes[c.hero]){        // 합류 — 전용 주사위와 경험치가 함께 생긴다
+    addHero(G.run, c.hero);                   // 자리·주사위·layout 을 addHero 가 한꺼번에 한다
   }
 
   h.xp = Math.max(0, h.xp - xpNeed(h.level));
@@ -1619,12 +1721,27 @@ function icoWeapon(w, x, y, s){
 
 /* ---- 면 타일 ------------------------------------------------------------
    관찰된 원본 타일: 파란 라운드 사각 + 무기 아이콘 + 큰 흰 숫자(발사 수)     */
+/* 금속 띠 — 어두운 가장자리 → 본색 → 밝은 반사 띠 → 본색 → 다시 어두움.
+   금속이 금속으로 보이는 건 '밝은 띠 하나와 어두운 띠 하나가 같이 있어서'다.
+   두 색만 위아래로 깔면 아무리 색을 맞춰도 플라스틱처럼 보인다(2026-08-19 David 지적). */
+function metalGrad(x0, y0, x1, y1, pal){
+  const c = pal[0], d = pal[1], hi = pal[2] || '#ffffff';
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  g.addColorStop(0.00, d);
+  g.addColorStop(0.15, c);
+  g.addColorStop(0.31, hi);      // 반사되는 밝은 띠
+  g.addColorStop(0.45, c);
+  g.addColorStop(0.63, d);       // 그 아래 어두운 띠 — 이 대비가 금속감을 만든다
+  g.addColorStop(0.82, c);
+  g.addColorStop(1.00, d);
+  return g;
+}
+
 function faceTile(x, y, w, h, f, opt){
   opt = opt || {};
   const pal = opt.pal || [CFG.col.tile, CFG.col.tile2];
-  const g = ctx.createLinearGradient(x, y, x, y + h);
-  g.addColorStop(0, pal[0]); g.addColorStop(1, pal[1]);
-  ctx.fillStyle = g; rr(x, y, w, h, Math.min(10, w * 0.18)); ctx.fill();
+  ctx.fillStyle = metalGrad(x + w * 0.18, y, x + w * 0.82, y + h, pal);
+  rr(x, y, w, h, Math.min(10, w * 0.18)); ctx.fill();
   ctx.fillStyle = 'rgba(255,255,255,0.28)';
   rr(x + w * 0.08, y + h * 0.07, w * 0.84, h * 0.3, 6); ctx.fill();
   if (opt.hi){
@@ -1687,9 +1804,8 @@ function roundPoly(pts, r){
 /* 한 면의 내용 — (0,0)~(side,side) 안에 그린다. 호출부가 기울여 놓는다 */
 function cubeFaceContent(side, f, pal, look){
   look = look || CFG.diceTiers[0].look;
-  const g = ctx.createLinearGradient(0, 0, 0, side);
-  g.addColorStop(0, pal[0]); g.addColorStop(1, pal[1]);
-  ctx.fillStyle = g;
+  // 살짝 비스듬한 금속 띠 — 정확히 수직이면 띠가 자로 그은 듯해서 어색하다
+  ctx.fillStyle = metalGrad(side * 0.18, 0, side * 0.82, side, pal);
   ctx.fillRect(0, 0, side, side);
 
   // 보석 컷 — 등급이 오를수록 겹이 는다. 숫자·아이콘보다 먼저 깔아야 가려지지 않는다
@@ -2228,6 +2344,23 @@ function drawHud(){
   txt('판 ' + r.stage + (isBoss(r.stage) ? ' ★' : ''), L.w / 2, ly + 32, 11, '#e8eee2', 'center');
   if (b.phase === 'wave'){
     bar(lx, ly + 40, lw, 3, clamp(b.waveT / CFG.wave.limit, 0, 1), '#f2efe4', 'rgba(0,0,0,0.28)');
+  }
+
+  // 다음 웨이브를 지금 부르는 버튼. 웨이브 중·쉬는 중에만 뜬다
+  if (b.phase === 'wave' || b.phase === 'gap'){
+    const bw2 = 54, bx2 = lx + lw + 6, by2 = ly, bh2 = 22;
+    ctx.fillStyle = '#3ac13a'; rr(bx2, by2, bw2, bh2, 5); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.22)'; rr(bx2 + 2, by2 + 2, bw2 - 4, 7, 3); ctx.fill();
+    // 두 겹 화살표 — '빨리 감기'
+    ctx.fillStyle = '#fff';
+    for (let k = 0; k < 2; k++){
+      const ax2 = bx2 + 9 + k * 8;
+      ctx.beginPath();
+      ctx.moveTo(ax2, by2 + 7); ctx.lineTo(ax2 + 6, by2 + 11); ctx.lineTo(ax2, by2 + 15);
+      ctx.closePath(); ctx.fill();
+    }
+    txt('출발', bx2 + 36, by2 + 11, 11, '#fff', 'center');
+    HIT.push({ x:bx2 - 4, y:by2 - 4, w:bw2 + 8, h:bh2 + 8, fn:function(){ forceNextWave(); } });
   }
 
   // 좌상단 톱니 = 홈으로 (런은 유지된다)
@@ -2876,7 +3009,7 @@ function drawPick(){
       icoWeapon(ws[k], x + cw / 2 + (k - (ws.length - 1) / 2) * 30, y + chh - 16, 12);
     }
     HIT.push({ x:x, y:y, w:cw, h:chh, fn:(function(h){
-      return function(){ G.run.heroes[h] = newHero(h); startStage(); };
+      return function(){ addHero(G.run, h); startStage(); };   // 처음 고른 영웅 = 가운데
     })(hid) });
   }
 
@@ -3149,14 +3282,46 @@ function drawHeroDetail(){
   const px = (L.w - pw) / 2, py = ribBottom + 8 + Math.max(0, (availH - pw * 1.15) / 2);
   heroPortrait(hid, px, py, pw, pw * 1.15);
 
-  // 6면은 '판을 시작할 때의 모습'이다 — 주사위 등급이 이 눈금을 올린다(무기 레벨과는 무관).
-  const bf = heroStartFaces(hid), tgap = 6;
+  // 6면은 '판을 시작할 때의 모습'이다.
+  // 2026-08-19 (David 지시): 등급이 여섯 면을 한꺼번에 올리던 것을 없애고,
+  //   면마다 코인으로 하나씩 올린다. 그래서 면 옆에 [+] 가 붙는다.
+  const bf = heroStartFaces(hid), tgap = 6, up = faceUps(hid);
   const tTop = py + (pw * 1.15 - (ts * 3 + tgap * 2)) / 2;
+  const F = CFG.faceUp, coin = G.meta.cur[F.cur];
   for (let i = 0; i < bf.length; i++){
     const left = i < 3, k = left ? i : i - 3;
     const tx = left ? px - ts - 10 : px + pw + 10;
-    faceTile(tx, tTop + k * (ts + tgap), ts, ts, bf[i], { pal:dicePal(hid) });
+    const ty2 = tTop + k * (ts + tgap);
+    faceTile(tx, ty2, ts, ts, bf[i], { pal:dicePal(hid) });
+
+    // [+] — 바깥쪽 모서리에 붙인다(가운데 얼굴을 가리지 않게)
+    const maxed = up[i] >= F.max;
+    const cost  = faceUpCost(hid, i);
+    const can   = !maxed && coin >= cost;
+    const bs    = Math.max(16, Math.round(ts * 0.52));
+    const bx2   = left ? tx - bs - 3 : tx + ts + 3;
+    const by2   = ty2 + (ts - bs) / 2;
+    ctx.fillStyle = maxed ? '#6d7a71' : (can ? '#3ac13a' : '#b9c2c9');
+    rr(bx2, by2, bs, bs, 4); ctx.fill();
+    if (maxed){
+      txtOut('MAX', bx2 + bs / 2, by2 + bs / 2, Math.round(bs * 0.36), '#dfe7ee', 'center', 2);
+    } else {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, bs * 0.13); ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(bx2 + bs * 0.28, by2 + bs / 2); ctx.lineTo(bx2 + bs * 0.72, by2 + bs / 2);
+      ctx.moveTo(bx2 + bs / 2, by2 + bs * 0.28); ctx.lineTo(bx2 + bs / 2, by2 + bs * 0.72);
+      ctx.stroke(); ctx.lineCap = 'butt';
+      txtOut(String(cost), bx2 + bs / 2, by2 + bs + 7, 9, can ? '#ffd75e' : '#e26a5a', 'center', 2);
+      if (can){
+        HIT.push({ x:bx2 - 3, y:by2 - 3, w:bs + 6, h:bs + 6, fn:(function(k2){
+          return function(){ faceUpBuy(hid, k2); };
+        })(i) });
+      }
+    }
   }
+  // 코인이 무엇에 쓰이는지 한 줄 — 안 적어두면 왜 [+] 가 회색인지 알 수 없다
+  icoCur(F.cur, px + pw / 2 - 22, py + pw * 1.15 + 12, 13);
+  txtOut(String(coin) + '  면 눈금 올리기', px + pw / 2 - 8, py + pw * 1.15 + 12, 11, '#fff', 'left', 3);
 
   // 전투력
   ctx.fillStyle = '#8f9a92'; rr(52, powY, L.w - 104, powH, 7); ctx.fill();
@@ -3214,10 +3379,10 @@ function diceTierBar(x, y, w, h, hid){
   const dx = x + 8, dy = y + (h - 24) / 2;
   ctx.fillStyle = T.col2; rr(dx, dy, 24, 24, 5); ctx.fill();
   ctx.fillStyle = T.col;  rr(dx + 2, dy + 2, 20, 20, 4); ctx.fill();
-  txtOut(String(T.base), dx + 12, dy + 12, 13, '#22303c', 'center', 2);
+  txtOut(String(T.skills), dx + 12, dy + 12, 13, '#22303c', 'center', 2);
 
   txtOut(T.name + ' 주사위', dx + 32, y + h / 2 - 6, 12, '#fff', 'left', 3);
-  txt('시작 눈금 ' + T.base, dx + 32, y + h / 2 + 8, 10, '#dfe7ee', 'left');
+  txt('스킬 칸 ' + T.skills + '개', dx + 32, y + h / 2 + 8, 10, '#dfe7ee', 'left');
 
   if (!nx){
     txt('최고 등급', x + w - 12, y + h / 2, 11, '#ffd75e', 'right');
